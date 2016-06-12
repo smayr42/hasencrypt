@@ -1,0 +1,6 @@
+/dist/
+*.swp
+*.key
+webroot
+.cabal-sandbox/
+cabal.sandbox.config
