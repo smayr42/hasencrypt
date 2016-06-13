@@ -52,9 +52,6 @@ import           Safe
 import           System.FilePath            ((</>))
 import           System.IO                  (hPrint, stderr)
 
-directoryUrl :: String
-directoryUrl = "https://acme-staging.api.letsencrypt.org/directory"
-
 data Directory = Directory
   { newRegUrl      :: Text
   , newAuthzUrl    :: Text
@@ -87,13 +84,14 @@ instance FromJSON Challenge where
   parseJSON _ = mzero
 
 data AcmeState = AcmeState
-  { _nonce     :: Maybe Text
-  , _directory :: Maybe Directory
-  , _key       :: PrivateKey
+  { _nonce        :: Maybe Text
+  , _directory    :: Maybe Directory
+  , _key          :: PrivateKey
+  , _directoryUrl :: String
   } deriving Show
 makeLenses ''AcmeState
 
-initialAcmeState :: PrivateKey -> AcmeState
+initialAcmeState :: PrivateKey -> String -> AcmeState
 initialAcmeState = AcmeState Nothing Nothing
 
 data AcmeException =
@@ -154,7 +152,8 @@ ensureDirectory = do
   currentDirectory <- use directory
   case currentDirectory of
     Nothing -> do
-      r <- (^. responseBody) <$> (asJSON =<< acmeRequest (get directoryUrl))
+      url <- use directoryUrl
+      r <- (^. responseBody) <$> (asJSON =<< acmeRequest (get url))
       directory Lens..= Just r
       return r
     Just dir -> return dir
@@ -164,7 +163,8 @@ ensureNonce = do
   currentNonce <- use nonce
   case currentNonce of
     Nothing -> do
-      nextNonce <- acmeRequest (head_ directoryUrl) >> use nonce
+      url <- use directoryUrl
+      nextNonce <- acmeRequest (head_ url) >> use nonce
       NonceError "head request did not return nonce" `throwIfNothing` nextNonce
     Just n -> return n
 
@@ -316,6 +316,6 @@ acmeNewCert csr = do
     certLocErr = AuthorizationError "certification location missing"
     decodeChain chain = (CertError . show) `throwIfError` decodeCertificateChain chain
 
-runAcmeM :: PrivateKey -> AcmeM a -> IO a
-runAcmeM accountPriv (AcmeT m) = evalStateT m $ initialAcmeState accountPriv
+runAcmeM :: PrivateKey -> String -> AcmeM a -> IO a
+runAcmeM accountKey dirUrl (AcmeT m) = evalStateT m $ initialAcmeState accountKey dirUrl
 
