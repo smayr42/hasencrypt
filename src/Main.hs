@@ -1,6 +1,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards   #-}
 
+module Main (main) where
+
 import           ACME
 import           Control.Monad            (forM, mzero)
 import           Control.Monad.Catch      (Exception, MonadThrow)
