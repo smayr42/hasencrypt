@@ -93,43 +93,63 @@ defaultDirectoryUrl = "https://acme-staging.api.letsencrypt.org/directory"
 defaultOptions :: Options
 defaultOptions = Options defaultDirectoryUrl mzero mzero mzero mzero
 
-options :: [OptDescr (Options -> Options)]
+data OptDescrEx a = ReqOption { getOptDescr :: OptDescr a }
+                  | OptOption { getOptDescr :: OptDescr a }
+
+options :: [OptDescrEx (Options -> Options)]
 options =
-  [ Option ['D'] ["directory-url"]
+  [ OptOption $ Option ['D'] ["directory-url"]
     (ReqArg
       (\o opts -> opts { optDirectoryUrl = o })
       "URL"
     ) "the ACME directory url"
-  , Option ['w'] ["webroot"]
+  , ReqOption $ Option ['w'] ["webroot"]
     (ReqArg
       (\o opts -> opts { optWebroot = o })
       "DIR"
     ) "path to webroot for responding to http-01 challenges"
-  , Option ['a'] ["account-key"]
+  , ReqOption $ Option ['a'] ["account-key"]
     (ReqArg
       (\o opts -> opts { optAccoutKey = o })
       "FILE"
     ) "key for registering the ACME account"
-  , Option ['d'] ["domain-key"]
+  , ReqOption $ Option ['d'] ["domain-key"]
     (ReqArg
       (\o opts -> opts { optDomainKey = o })
       "FILE"
     ) "key for issuing the certificate"
   ]
 
+getOptReq :: [OptDescrEx (a -> a)] -> [String] -> (Bool, [a -> a], [String], [String])
+getOptReq descrs args =
+  case getOpt Permute options' args of
+    (opts, rest, errs) ->
+        let (present, opts') = foldl (flip id) ([], [id]) opts
+        in (required `subsetOf` present, opts', rest, errs)
+  where
+    options' = extOptFun . getOptDescr <$> descrs
+    extOptFun (Option s l arg d) = Option s l (extArgFun l arg) d
+    extArgFun l (ReqArg f s) = ReqArg (\o (ls, os) -> (l : ls, f o : os)) s
+    extArgFun l (OptArg f s) = OptArg (\o (ls, os) -> (l : ls, f o : os)) s
+    extArgFun l (NoArg f) = NoArg $ \(ls, os) -> (l : ls, f : os)
+    required = [l | ReqOption (Option _ l _ _) <- descrs]
+    subsetOf xs ys = all (`elem` ys) xs
+
 parseOptions :: [String] -> IO Options
 parseOptions args =
-  case getOpt Permute options args of
-    (opts, domains, []) -> if null domains then
-                             getProgName >>= dieWithUsage []
-                           else
-                             return $ (foldOptions opts) { optDomains = domains }
-    (_, _, errs) -> getProgName >>= dieWithUsage (errs ++ ["\n"])
+  case getOptReq options args of
+    (True, opts, domains, []) -> processOptions opts domains
+    (False, _, _, _) -> getProgName >>= dieWithUsage []
+    (_, _, _, errs) -> getProgName >>= dieWithUsage (errs ++ ["\n"])
   where
-    foldOptions = foldl (flip id) defaultOptions
-    dieWithUsage errs prog = die $ concat errs ++ usageInfo (header prog) options
     header :: String -> String
     header prog = "Usage: " ++ prog ++ " [OPTION...] domains...\n"
+    dieWithUsage errs prog = die $ concat errs ++ usageInfo (header prog) (getOptDescr <$> options)
+    processOptions opts domains =
+      if null domains then
+        getProgName >>= dieWithUsage []
+      else
+        return $ (foldl (flip id) defaultOptions opts) { optDomains = domains }
 
 main :: IO ()
 main = do
