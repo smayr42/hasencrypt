@@ -77,7 +77,7 @@ retrieveCert domainKey webroot domains = do
     reg <- acmeNewReg
     _ <- acmeAgreeTOS reg
     _ <- forM domains $ acmeNewHttp01Authz webroot . T.pack
-    chain <- makeCSR domainKey domains >>= acmeNewCert
+    chain <- acmeNewCert =<< makeCSR domainKey domains
     return $ certChainToPEM chain
 
 data Options = Options { optDirectoryUrl :: String
@@ -133,7 +133,7 @@ parseOptions args =
 
 main :: IO ()
 main = do
-  Options {..} <- getArgs >>= parseOptions
+  Options {..} <- parseOptions =<< getArgs
   accountKey <- keyFromFile $ optAccoutKey
   domainKey <- keyFromFile $ optDomainKey
   cert <- runAcmeM accountKey optDirectoryUrl $ retrieveCert domainKey optWebroot optDomains
