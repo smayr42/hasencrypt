@@ -37,7 +37,7 @@ import qualified Data.ByteString.Char8      as Char
 import qualified Data.ByteString.Lazy       as L
 import qualified Data.HashMap.Strict        as H
 import           Data.Monoid                ((<>))
-import           Data.Text                  hiding (filter, map)
+import           Data.Text                  hiding (filter)
 import           Data.Text.Encoding         (decodeUtf8)
 import qualified Data.Text.IO               as TextIO (writeFile)
 import           Data.Typeable
@@ -310,7 +310,7 @@ acmeNewCert csr = do
   location <- certLocErr `throwIfNothing` (resNew ^? responseHeaderString "Location")
   resCert <- liftIO $ iterateUntilM statusCreated (const $ get location) resNew
   chain <- followUpLinks resCert
-  decodeChain $ CertificateChainRaw $ map L.toStrict chain
+  decodeChain $ CertificateChainRaw $ L.toStrict <$> chain
   where
     statusCreated r = r ^. responseStatus == created201
     certLocErr = AuthorizationError "certification location missing"

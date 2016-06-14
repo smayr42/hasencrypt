@@ -58,7 +58,7 @@ keyFromFile file = do
 certChainToPEM :: CertificateChain -> L.ByteString
 certChainToPEM chain =
   let CertificateChainRaw encoded = encodeCertificateChain chain in
-  L.concat $ map certToPEM encoded
+  L.concat $ certToPEM <$> encoded
   where
     certToPEM bytes = pemWriteLBS $ PEM "CERTIFICATE" [] bytes
 
@@ -69,7 +69,7 @@ makeCSR domainPriv domains = do
   where
     keyPair = KeyPairRSA (private_pub domainPriv) domainPriv
     subject = X520Attributes []
-    altNames = map AltNameDNS domains
+    altNames = AltNameDNS <$> domains
     extAttrs = PKCS9Attributes [PKCS9Attribute $ ExtSubjectAltName altNames]
 
 retrieveCert :: PrivateKey -> String -> [String] -> AcmeM L.ByteString
