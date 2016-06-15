@@ -120,11 +120,11 @@ options =
     ) "key for issuing the certificate"
   ]
 
-getOptReq :: [OptDescrEx (a -> a)] -> [String] -> (Bool, [a -> a], [String], [String])
+getOptReq :: [OptDescrEx a] -> [String] -> (Bool, [a], [String], [String])
 getOptReq descrs args =
   case getOpt Permute options' args of
     (opts, rest, errs) ->
-        let (present, opts') = foldl (flip id) ([], [id]) opts
+        let (present, opts') = foldl (flip id) ([], []) opts
         in (required `subsetOf` present, opts', rest, errs)
   where
     options' = extOptFun . getOptDescr <$> descrs
