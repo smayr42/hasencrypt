@@ -50,7 +50,6 @@ import           Network.HTTP.Types.Status  (conflict409, created201)
 import           Network.Wreq               as Wreq
 import           Safe
 import           System.FilePath            ((</>))
-import           System.IO                  (hPrint, stderr)
 
 data Directory = Directory
   { newRegUrl      :: Text
@@ -123,10 +122,6 @@ newtype AcmeT s a = AcmeT { _runAcmeT :: StateT s IO a }
   deriving (Functor, Applicative, Monad, MonadIO, MonadThrow, MonadState s)
 
 type AcmeM a = AcmeT AcmeState a
-
--- TODO: implement proper logging
-dbgPrint :: Show a => a -> AcmeM ()
-dbgPrint = liftIO . hPrint stderr . show
 
 acmeRequest :: IO (Response a) -> AcmeM (Response a)
 acmeRequest request = do
@@ -211,9 +206,7 @@ acmeNewReg = do
   let opts = Wreq.defaults & Wreq.checkStatus .~ Just statusNewReg
   url <- unpack . newRegUrl <$> ensureDirectory
   res <- acmeSignedPostWith opts url resourceNewReg
-  loc <- RegistrationError "registration location missing" `throwIfNothing` (res ^? responseHeaderUtf8 "Location")
-  dbgPrint $ "Registration: " <> loc
-  return loc
+  RegistrationError "registration location missing" `throwIfNothing` (res ^? responseHeaderUtf8 "Location")
   where
     statusNewReg s h c
       | s == created201 = Nothing
@@ -252,9 +245,7 @@ acmeAwaitAuthz :: String -> AcmeM Challenge
 acmeAwaitAuthz url =
   iterateUntil notPending $ do
     liftIO $ threadDelay $ 1000 * 500
-    challenge <- fmap (^. responseBody) . asJSON =<< liftIO (get url)
-    dbgPrint $ "Status: " <> challenge ^. chStatus
-    return challenge
+    fmap (^. responseBody) . asJSON =<< liftIO (get url)
   where
     notPending challenge = challenge ^. chStatus /= "pending"
 
@@ -313,7 +304,7 @@ acmeNewCert csr = do
   decodeChain $ CertificateChainRaw $ L.toStrict <$> chain
   where
     statusCreated r = r ^. responseStatus == created201
-    certLocErr = AuthorizationError "certification location missing"
+    certLocErr = AuthorizationError "certificate location missing"
     decodeChain chain = (CertError . show) `throwIfError` decodeCertificateChain chain
 
 runAcmeM :: PrivateKey -> String -> AcmeM a -> IO a

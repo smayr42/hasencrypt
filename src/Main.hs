@@ -4,7 +4,7 @@
 module Main (main) where
 
 import           ACME
-import           Control.Monad            (forM, mzero)
+import           Control.Monad            (forM_, mzero)
 import           Control.Monad.Catch      (Exception, MonadThrow)
 import           Control.Monad.IO.Class
 import           Crypto.Hash
@@ -25,6 +25,7 @@ import           Safe
 import           System.Console.GetOpt
 import           System.Environment       (getArgs, getProgName)
 import           System.Exit              (die)
+import           System.IO                (hPutStrLn, stderr)
 
 decodeDER :: BC.ByteString -> Either String [ASN1]
 decodeDER = either (Left . show) Right . decodeASN1' DER
@@ -38,7 +39,7 @@ keyFromPEM pem =
   then keyFromDER . pemContent $ pem
   else Left "PEM: unknown format"
 
--- FIXME: get rid of the deprecated Crypto.PubKey.RSA (crypto-pubkey package)
+-- FIXME: get rid of the deprecated crypto-pubkey package, which provides Crypto.PubKey.RSA
 convPubKey :: RSA.PublicKey -> PublicKey
 convPubKey (RSA.PublicKey size n e) = PublicKey size n e
 
@@ -72,13 +73,24 @@ makeCSR domainPriv domains = do
     altNames = AltNameDNS <$> domains
     extAttrs = PKCS9Attributes [PKCS9Attribute $ ExtSubjectAltName altNames]
 
+logStrLn :: MonadIO m => String -> m ()
+logStrLn str = liftIO $ hPutStrLn stderr str
+
 retrieveCert :: PrivateKey -> String -> [String] -> AcmeM L.ByteString
 retrieveCert domainKey webroot domains = do
-    reg <- acmeNewReg
-    _ <- acmeAgreeTOS reg
-    _ <- forM domains $ acmeNewHttp01Authz webroot . T.pack
+    regUrl <- acmeNewReg
+    logStrLn $ "Registered account with url " ++ T.unpack regUrl
+    _ <- acmeAgreeTOS regUrl
+    logStrLn $ "Agreed to TOS"
+    forM_ domains $ \domain -> do
+      logStrLn $ "Performing HTTP validation for domain " ++ domain ++ "..."
+      _ <- acmeNewHttp01Authz webroot $ T.pack domain
+      logStrLn $ "Completed challenge for domain " ++ domain
     chain <- acmeNewCert =<< makeCSR domainKey domains
+    logStrLn $ "Obtained certificate chain of length " ++ show (chainLength chain)
     return $ certChainToPEM chain
+    where
+      chainLength (CertificateChain c) = length c
 
 data Options = Options { optDirectoryUrl :: String
                        , optWebroot      :: String
