@@ -25,7 +25,7 @@ import           Control.Lens               as Lens
 import           Control.Monad.Catch
 import           Control.Monad.IO.Class
 import           Control.Monad.Loops
-import           Control.Monad.State        hiding (get)
+import           Control.Monad.State        as State
 import           Crypto.Hash                as Hash
 import           Crypto.PubKey.RSA          (PrivateKey, private_pub)
 import           Crypto.PubKey.RSA.Types    (Error)
@@ -50,6 +50,21 @@ import           Network.HTTP.Types.Status  (conflict409, created201)
 import           Network.Wreq               as Wreq
 import           Safe
 import           System.FilePath            ((</>))
+import           System.Timeout             (timeout)
+
+throwIfNot :: (MonadThrow m, Exception e) => e -> Bool -> m ()
+throwIfNot e b = if not b then throwM e else pure ()
+
+throwIfNothing :: (MonadThrow m, Exception e) => e -> Maybe a -> m a
+throwIfNothing e = maybe (throwM e) pure
+
+throwIfError :: (MonadThrow m, Exception e) => (a -> e) -> Either a b -> m b
+throwIfError f = either (throwM . f) pure
+
+responseHeaderUtf8 :: (Applicative f, Contravariant f) => HeaderName -> (Text -> f Text) -> Response body -> f (Response body)
+responseHeaderUtf8 name = responseHeader name . to decodeUtf8
+responseHeaderString :: (Applicative f, Contravariant f) => HeaderName -> (String -> f String) -> Response body -> f (Response body)
+responseHeaderString name = responseHeaderUtf8 name . to unpack
 
 data Directory = Directory
   { newRegUrl      :: Text
@@ -104,64 +119,10 @@ data AcmeException =
 
 instance Exception AcmeException
 
-throwIfNot :: (MonadThrow m, Exception e) => e -> Bool -> m ()
-throwIfNot e b = if not b then throwM e else pure ()
-
-throwIfNothing :: (MonadThrow m, Exception e) => e -> Maybe a -> m a
-throwIfNothing e = maybe (throwM e) pure
-
-throwIfError :: (MonadThrow m, Exception e) => (a -> e) -> Either a b -> m b
-throwIfError f = either (throwM . f) pure
-
-responseHeaderUtf8 :: (Applicative f, Contravariant f) => HeaderName -> (Text -> f Text) -> Response body -> f (Response body)
-responseHeaderUtf8 name = responseHeader name . to decodeUtf8
-responseHeaderString :: (Applicative f, Contravariant f) => HeaderName -> (String -> f String) -> Response body -> f (Response body)
-responseHeaderString name = responseHeaderUtf8 name . to unpack
-
 newtype AcmeT s a = AcmeT { _runAcmeT :: StateT s IO a }
   deriving (Functor, Applicative, Monad, MonadIO, MonadThrow, MonadState s)
 
 type AcmeM a = AcmeT AcmeState a
-
-acmeRequest :: IO (Response a) -> AcmeM (Response a)
-acmeRequest request = do
-  r <- liftIO request
-  nonce Lens..= (r ^? responseHeaderUtf8 "Replay-Nonce")
-  return r
-
-acmeSignedPostWith :: ToJSON a => Options -> String -> a -> AcmeM (Response L.ByteString)
-acmeSignedPostWith opts url payload = do
-  n <- ensureNonce
-  k <- use key
-  signed <- RSAError `throwIfError` signJWS (RS256 k) (makeJWS n)
-  acmeRequest $ postWith opts url $ toJSON signed
-  where
-    makeJWS n = plainJWS (encode payload) (Just $ makeHeader n) Nothing
-    makeHeader n = H.fromList [("nonce", String n)]
-
-acmeSignedPost :: ToJSON a => String -> a -> AcmeM (Response L.ByteString)
-acmeSignedPost = acmeSignedPostWith Wreq.defaults
-
-ensureDirectory :: AcmeM Directory
-ensureDirectory = do
-  currentDirectory <- use directory
-  case currentDirectory of
-    Nothing -> do
-      url <- use directoryUrl
-      r <- (^. responseBody) <$> (asJSON =<< acmeRequest (get url))
-      directory Lens..= Just r
-      return r
-    Just dir -> return dir
-
-ensureNonce :: AcmeM Text
-ensureNonce = do
-  currentNonce <- use nonce
-  case currentNonce of
-    Nothing -> do
-      url <- use directoryUrl
-      nextNonce <- acmeRequest (head_ url) >> use nonce
-      NonceError "head request did not return nonce" `throwIfNothing` nextNonce
-    Just n -> return n
 
 resourceObject :: Text -> Object
 resourceObject tp = H.fromList ["resource" JSON..= tp]
@@ -193,12 +154,46 @@ resourceNewCert csr =
   resourceObject "new-cert" <> H.fromList
     [ "csr" JSON..= csr ]
 
--- parse and verify a response containing a JWS with JSON payload
-_asSignedJWS :: FromJSON a => Response L.ByteString -> AcmeM (SignedJWS a)
-_asSignedJWS response = do
-  jws <- (^. responseBody) <$> asJSON response
-  JWSError "invalid JWS signature" `throwIfNot` verifyJWS jws
-  return jws
+
+acmeRequest :: IO (Response a) -> AcmeM (Response a)
+acmeRequest request = do
+  r <- liftIO request
+  nonce Lens..= (r ^? responseHeaderUtf8 "Replay-Nonce")
+  return r
+
+acmeSignedPostWith :: ToJSON a => Options -> String -> a -> AcmeM (Response L.ByteString)
+acmeSignedPostWith opts url payload = do
+  n <- ensureNonce
+  k <- use key
+  signed <- RSAError `throwIfError` signJWS (RS256 k) (makeJWS n)
+  acmeRequest $ postWith opts url $ toJSON signed
+  where
+    makeJWS n = plainJWS (encode payload) (Just $ makeHeader n) Nothing
+    makeHeader n = H.fromList [("nonce", String n)]
+
+acmeSignedPost :: ToJSON a => String -> a -> AcmeM (Response L.ByteString)
+acmeSignedPost = acmeSignedPostWith Wreq.defaults
+
+ensureDirectory :: AcmeM Directory
+ensureDirectory = do
+  currentDirectory <- use directory
+  case currentDirectory of
+    Nothing -> do
+      url <- use directoryUrl
+      r <- (^. responseBody) <$> (asJSON =<< acmeRequest (Wreq.get url))
+      directory Lens..= Just r
+      return r
+    Just dir -> return dir
+
+ensureNonce :: AcmeM Text
+ensureNonce = do
+  currentNonce <- use nonce
+  case currentNonce of
+    Nothing -> do
+      url <- use directoryUrl
+      nextNonce <- acmeRequest (head_ url) >> use nonce
+      NonceError "head request did not return nonce" `throwIfNothing` nextNonce
+    Just n -> return n
 
 -- perform registration and return the location of the created resource
 acmeNewReg :: AcmeM Text
@@ -239,15 +234,30 @@ acmeHttp01Challenge webroot challenge = do
     makeThumbprint priv = jwkThumbprint Hash.SHA256 (private_pub priv)
     chTypeErr = AuthorizationError "wrong challenge type"
 
+acmeTimeout :: Int -> AcmeM a -> AcmeM (Maybe a)
+acmeTimeout sec (AcmeT f) = do
+  s <- State.get
+  res <- liftIO $ timeout usec $ runStateT f s
+  case res of
+       Just (a,s') -> State.put s' >> return (Just a)
+       Nothing -> nonce Lens..= Nothing >> return Nothing
+  where
+    usec = 1000000 * sec
+
 -- wait until an authorization is valid or revoked
--- TODO: add (configurable?) timeout
 acmeAwaitAuthz :: String -> AcmeM Challenge
-acmeAwaitAuthz url =
-  iterateUntil notPending $ do
+acmeAwaitAuthz url = do
+  res <- acmeTimeout 15 $ iterateUntil notPending $ do
     liftIO $ threadDelay $ 1000 * 500
-    fmap (^. responseBody) . asJSON =<< liftIO (get url)
+    fmap (^. responseBody) . asJSON =<< liftIO (Wreq.get url)
+  challenge <- timeoutErr `throwIfNothing` res
+  revokedErr `throwIfNot` isValid challenge
+  return challenge
   where
     notPending challenge = challenge ^. chStatus /= "pending"
+    isValid challenge = challenge ^. chStatus == "valid"
+    timeoutErr = AuthorizationError "challenge timed out"
+    revokedErr = AuthorizationError "authorization was revoked"
 
 -- request a new authorization and return the location of the created resource and a list of challenges
 -- TODO: handle nontrivial combination policies
@@ -287,7 +297,7 @@ unfoldUntilM p f v
 -- TODO: limit the number of followed links
 followUpLinks :: Response L.ByteString -> AcmeM [L.ByteString]
 followUpLinks response = do
-  responses <- unfoldUntilM (not . hasUpLink) (liftIO .  get . relUpLink) response
+  responses <- unfoldUntilM (not . hasUpLink) (liftIO .  Wreq.get . relUpLink) response
   return $ responses ^.. folded . responseBody
   where
     relUpLink r = r ^. responseLink "rel" "up" . linkURL . to decodeUtf8 . to unpack
@@ -299,7 +309,7 @@ acmeNewCert csr = do
   url <- unpack . newCertUrl <$> ensureDirectory
   resNew <- acmeSignedPost url $ resourceNewCert $ encode64 $ toDER csr
   location <- certLocErr `throwIfNothing` (resNew ^? responseHeaderString "Location")
-  resCert <- liftIO $ iterateUntilM statusCreated (const $ get location) resNew
+  resCert <- liftIO $ iterateUntilM statusCreated (const $ Wreq.get location) resNew
   chain <- followUpLinks resCert
   decodeChain $ CertificateChainRaw $ L.toStrict <$> chain
   where
