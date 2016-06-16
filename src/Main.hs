@@ -9,7 +9,6 @@ import           Control.Monad.Catch      (Exception, MonadThrow)
 import           Control.Monad.IO.Class
 import           Crypto.Hash
 import           Crypto.PubKey.RSA        hiding (Error)
-import qualified Crypto.Types.PubKey.RSA  as RSA
 import           Data.ASN1.BinaryEncoding
 import           Data.ASN1.Encoding
 import           Data.ASN1.Types
@@ -21,6 +20,7 @@ import qualified Data.Text                as T
 import           Data.Typeable
 import           Data.X509
 import           Data.X509.PKCS10         as CSR hiding (subject)
+import           PKCS1
 import           Safe
 import           System.Console.GetOpt
 import           System.Environment       (getArgs, getProgName)
@@ -30,21 +30,14 @@ import           System.IO                (hPutStrLn, stderr)
 decodeDER :: BC.ByteString -> Either String [ASN1]
 decodeDER = either (Left . show) Right . decodeASN1' DER
 
-keyFromDER :: BC.ByteString -> Either String RSA.PrivateKey
-keyFromDER bs = fst <$> (decodeDER bs >>= fromASN1)
+keyFromDER :: BC.ByteString -> Either String PrivateKey
+keyFromDER bs = getPrivateKey . fst <$> (decodeDER bs >>= fromASN1)
 
-keyFromPEM :: PEM -> Either String RSA.PrivateKey
+keyFromPEM :: PEM -> Either String PrivateKey
 keyFromPEM pem =
   if pemName pem == "RSA PRIVATE KEY"
   then keyFromDER . pemContent $ pem
   else Left "PEM: unknown format"
-
--- FIXME: get rid of the deprecated crypto-pubkey package, which provides Crypto.PubKey.RSA
-convPubKey :: RSA.PublicKey -> PublicKey
-convPubKey (RSA.PublicKey size n e) = PublicKey size n e
-
-convPrivKey :: RSA.PrivateKey -> PrivateKey
-convPrivKey (RSA.PrivateKey pub d p q dP dQ qinv) = PrivateKey (convPubKey pub) d p q dP dQ qinv
 
 data Error = Error String deriving (Show, Typeable)
 instance Exception Error
@@ -54,7 +47,7 @@ keyFromFile file = do
   bytes <- liftIO $ B.readFile file
   pems <- Error `throwIfError` pemParseBS bytes
   pem <- Error ("pem container '" ++ file ++ "' is empty") `throwIfNothing` headMay pems
-  Error `throwIfError` fmap convPrivKey (keyFromPEM pem)
+  Error `throwIfError` keyFromPEM pem
 
 certChainToPEM :: CertificateChain -> L.ByteString
 certChainToPEM chain =

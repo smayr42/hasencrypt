@@ -21,7 +21,6 @@ executable hasencrypt
         base64-bytestring >=1.0.0.1,
         bytestring >=0.10.6.0,
         cryptonite >=0.16,
-        crypto-pubkey-types >=0.4.3,
         exceptions >=0.8.2.1,
         filepath >=1.4.0.0,
         http-client >=0.4.28,

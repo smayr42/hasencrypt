@@ -281,8 +281,8 @@ encode64 = decodeUtf8 . fst . Char.spanEnd (== '=') . Base64.encode
 
 unfoldUntilM :: (Monad m) => (a -> Bool) -> (a -> m a) -> a -> m [a]
 unfoldUntilM p f v
-    | p v       = return [v]
-    | otherwise = f v >>= \v' -> (v:) <$> unfoldUntilM p f v'
+  | p v       = return [v]
+  | otherwise = f v >>= \v' -> (v:) <$> unfoldUntilM p f v'
 
 -- TODO: limit the number of followed links
 followUpLinks :: Response L.ByteString -> AcmeM [L.ByteString]
