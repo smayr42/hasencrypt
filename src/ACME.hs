@@ -30,6 +30,7 @@ import           Control.Monad.State       as State
 import           Crypto.Hash               as Hash
 import           Crypto.PubKey.RSA         (PrivateKey, private_pub)
 import           Crypto.PubKey.RSA.Types   (Error)
+import           Crypto.Random.Types
 import           Data.Aeson                as JSON
 import qualified Data.Aeson.Lens           as JLens
 import           Data.Aeson.Types          (parseMaybe)
@@ -111,6 +112,9 @@ newtype AcmeT s a = AcmeT { _runAcmeT :: StateT s IO a }
 
 type AcmeM a = AcmeT AcmeState a
 
+instance MonadRandom (AcmeT s) where
+  getRandomBytes = liftIO . getRandomBytes
+
 resourceObject :: Text -> Object
 resourceObject tp = H.fromList ["resource" JSON..= tp]
 
@@ -152,7 +156,7 @@ acmeSignedPostWith :: ToJSON a => Options -> String -> a -> AcmeM (Response L.By
 acmeSignedPostWith opts url payload = do
   n <- ensureNonce
   k <- use key
-  signed <- RSAError `throwIfError` signJWS (RS256 k) (makeJWS n)
+  signed <- throwIfError RSAError =<< signJWS (RS256 k) (makeJWS n)
   acmeRequest $ postWith opts url $ toJSON signed
   where
     makeJWS n = plainJWS (encode payload) (Just $ makeHeader n) Nothing
@@ -291,7 +295,7 @@ acmeNewCert csr = do
   chain <- followUpLinks resCert
   decodeChain $ CertificateChainRaw $ L.toStrict <$> chain
   where
-    base64 = decodeUtf8 . getByteString . encodeUnpad64 
+    base64 = decodeUtf8 . getByteString . encodeUnpad64
     statusCreated r = r ^. responseStatus == created201
     certLocErr = AuthorizationError "certificate location missing"
     decodeChain chain = (CertError . show) `throwIfError` decodeCertificateChain chain

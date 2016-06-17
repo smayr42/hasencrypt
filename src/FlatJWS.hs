@@ -18,7 +18,8 @@ module FlatJWS
 import           Base64
 import           Crypto.Hash
 import           Crypto.PubKey.RSA
-import           Crypto.PubKey.RSA.PKCS15 (sign, verify)
+import           Crypto.PubKey.RSA.PKCS15 (signSafer, verify)
+import           Crypto.Random.Types
 import           Data.Aeson               as JSON
 import           Data.Aeson.Types         (parseMaybe)
 import           Data.ByteArray           (convert)
@@ -134,13 +135,12 @@ instance FromJSON a => FromJSON (SignedJWS a) where
               <*> (fromBase64 <$> o .: "signature")
   parseJSON _ = mzero
 
--- FIXME: switch to cryptonite and use signSafer
-signJWS :: ToBase64 a => AlgKey -> PlainJWS a -> Either Error (SignedJWS a)
+signJWS :: (ToBase64 a, MonadRandom m) => AlgKey -> PlainJWS a -> m (Either Error (SignedJWS a))
 signJWS alg@(RS256 key) JWS{..} =
-  SignedJWS jws <$> signature
+  fmap (SignedJWS jws) <$> signature
   where
     jws = JWS payloadB64 (Just protectedB64) header
-    signature = sign Nothing (Just SHA256) key $ getByteString input
+    signature = signSafer (Just SHA256) key $ getByteString input
     input = getBase64Data protectedB64 <> "." <> getBase64Data payloadB64
     payloadB64 = encodeB64Data . runIdentity $ payload
     protectedB64 = encodeB64Data protectedAlg
