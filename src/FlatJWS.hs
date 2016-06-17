@@ -1,9 +1,8 @@
-{-# LANGUAGE FlexibleInstances          #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE OverloadedStrings          #-}
-{-# LANGUAGE RecordWildCards            #-}
-{-# LANGUAGE ScopedTypeVariables        #-}
-{-# LANGUAGE StandaloneDeriving         #-}
+{-# LANGUAGE FlexibleInstances   #-}
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE RecordWildCards     #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving  #-}
 
 module FlatJWS
   ( AlgKey(..)
@@ -16,85 +15,28 @@ module FlatJWS
   , getSignedPayload
   ) where
 
-import           Control.Monad              (guard, liftM2, mzero)
+import           Base64
 import           Crypto.Hash
 import           Crypto.PubKey.RSA
-import           Crypto.PubKey.RSA.PKCS15   (sign, verify)
-import           Data.Aeson                 as JSON
-import           Data.Aeson.Types           (parseMaybe)
-import           Data.ByteArray             (convert)
-import qualified Data.ByteString            as B
-import qualified Data.ByteString.Base64.URL as Base64
-import qualified Data.ByteString.Char8      as Char
-import qualified Data.ByteString.Lazy       as L
+import           Crypto.PubKey.RSA.PKCS15 (sign, verify)
+import           Data.Aeson               as JSON
+import           Data.Aeson.Types         (parseMaybe)
+import           Data.ByteArray           (convert)
+import qualified Data.ByteString          as B
+import qualified Data.ByteString.Char8    as Char
 import           Data.Functor.Identity
-import qualified Data.HashMap.Strict        as H
-import           Data.Maybe                 (fromMaybe)
-import           Data.Monoid                ((<>))
-import           Data.String                (IsString)
-import           Data.Text                  (Text)
-import           Data.Text.Encoding         (decodeUtf8, encodeUtf8)
-import           Data.Tuple                 (swap)
+import qualified Data.HashMap.Strict      as H
+import           Data.Text                (Text)
+import           Utils
 
-newtype ByteString64 = ByteString64 { getByteString :: B.ByteString }
-  deriving (Monoid, IsString, Show)
-
-class ToBase64 a where
-  toBase64 :: a -> ByteString64
-
-class FromBase64 a where
-  fromBase64 :: ByteString64 -> a
-
-decode64 :: ByteString64 -> Char.ByteString
-decode64 (ByteString64 bs)  = Base64.decodeLenient bs
-
-encode64 :: Char.ByteString -> ByteString64
-encode64 = ByteString64 . fst . Char.spanEnd (== '=') . Base64.encode
-
-instance ToBase64 B.ByteString where
-  toBase64 = encode64
-
-instance FromBase64 B.ByteString where
-  fromBase64 = decode64
-
-instance ToBase64 L.ByteString where
-  toBase64 = encode64 . L.toStrict
-
-instance FromBase64 L.ByteString where
-  fromBase64 = L.fromStrict . decode64
-
-instance ToJSON ByteString64 where
-  toJSON = toJSON . decodeUtf8 . getByteString
-
-instance FromJSON ByteString64 where
-  parseJSON (String s) = pure . ByteString64 . encodeUtf8 $ s
-  parseJSON _ = mzero
-
-instance ToBase64 Object where
-  toBase64 = toBase64 . JSON.encode
-
-bsToInteger :: B.ByteString -> Integer
-bsToInteger = B.foldl (\acc x -> acc * 256 + toInteger x) 0
-
-integerToBS :: Integer -> B.ByteString
-integerToBS = B.reverse . B.unfoldr (fmap swap <$> gen)
-  where
-    gen x = if x == 0 then Nothing else Just (fromIntegral <$> quotRem x 256)
-
-instance ToBase64 Integer where
-  toBase64 = encode64 . integerToBS
-
-instance FromBase64 Integer where
-  fromBase64 = bsToInteger . decode64
-
-data B64Data a = B64Data { getB64 :: ByteString64, getData :: a }
+data B64Data a = B64Data { getBase64Data :: ByteString64, getData :: a }
   deriving (Show)
 
 encodeB64Data :: ToBase64 a => a -> B64Data a
 encodeB64Data x = B64Data (toBase64 x) x
 
 instance ToJSON (B64Data a) where
-  toJSON = toJSON . getB64
+  toJSON = toJSON . getBase64Data
 
 instance FromJSON a => FromJSON (B64Data a) where
   parseJSON v = do
@@ -199,7 +141,7 @@ signJWS alg@(RS256 key) JWS{..} =
   where
     jws = JWS payloadB64 (Just protectedB64) header
     signature = sign Nothing (Just SHA256) key $ getByteString input
-    input = getB64 protectedB64 <> "." <> getB64 payloadB64
+    input = getBase64Data protectedB64 <> "." <> getBase64Data payloadB64
     payloadB64 = encodeB64Data . runIdentity $ payload
     protectedB64 = encodeB64Data protectedAlg
     protectedAlg = algToObject alg <> protectedObj
@@ -214,9 +156,9 @@ signedJWSAlgKey SignedJWS{..} =
 
 signingInput :: SignedJWS a -> Char.ByteString
 signingInput SignedJWS{..} =
-  getByteString $ protectedB64 <> "." <> getB64 payload
+  getByteString $ protectedB64 <> "." <> getBase64Data payload
   where
-    protectedB64 =  fromMaybe "" $ getB64 <$> protected
+    protectedB64 = fromMaybe "" $ getBase64Data <$> protected
     JWS{..} = jws
 
 verifyJWS :: SignedJWS a -> Bool

@@ -4,7 +4,6 @@
 module Main (main) where
 
 import           ACME
-import           Control.Monad            (forM_, mzero)
 import           Control.Monad.Catch      (Exception, MonadThrow)
 import           Control.Monad.IO.Class
 import           Crypto.Hash
@@ -17,15 +16,14 @@ import qualified Data.ByteString.Char8    as BC
 import qualified Data.ByteString.Lazy     as L
 import           Data.PEM
 import qualified Data.Text                as T
-import           Data.Typeable
 import           Data.X509
 import           Data.X509.PKCS10         as CSR hiding (subject)
 import           PKCS1
-import           Safe
 import           System.Console.GetOpt
 import           System.Environment       (getArgs, getProgName)
 import           System.Exit              (die)
 import           System.IO                (hPutStrLn, stderr)
+import           Utils
 
 decodeDER :: BC.ByteString -> Either String [ASN1]
 decodeDER = either (Left . show) Right . decodeASN1' DER
@@ -74,7 +72,7 @@ retrieveCert domainKey webroot domains = do
     regUrl <- acmeNewReg
     logStrLn $ "Registered account with url " ++ T.unpack regUrl
     _ <- acmeAgreeTOS regUrl
-    logStrLn $ "Agreed to TOS"
+    logStrLn "Agreed to TOS"
     forM_ domains $ \domain -> do
       logStrLn $ "Performing HTTP validation for domain " ++ domain ++ "..."
       _ <- acmeNewHttp01Authz webroot $ T.pack domain
@@ -97,9 +95,6 @@ defaultDirectoryUrl = "https://acme-staging.api.letsencrypt.org/directory"
 
 defaultOptions :: Options
 defaultOptions = Options defaultDirectoryUrl mzero mzero mzero mzero
-
-data OptDescrEx a = ReqOption { getOptDescr :: OptDescr a }
-                  | OptOption { getOptDescr :: OptDescr a }
 
 options :: [OptDescrEx (Options -> Options)]
 options =
@@ -125,21 +120,6 @@ options =
     ) "key for issuing the certificate"
   ]
 
-getOptReq :: [OptDescrEx a] -> [String] -> (Bool, [a], [String], [String])
-getOptReq descrs args =
-  case getOpt Permute options' args of
-    (opts, rest, errs) ->
-        let (present, opts') = foldl (flip id) ([], []) opts
-        in (required `subsetOf` present, opts', rest, errs)
-  where
-    options' = extOptFun . getOptDescr <$> descrs
-    extOptFun (Option s l arg d) = Option s l (extArgFun l arg) d
-    extArgFun l (ReqArg f s) = ReqArg (\o (ls, os) -> (l : ls, f o : os)) s
-    extArgFun l (OptArg f s) = OptArg (\o (ls, os) -> (l : ls, f o : os)) s
-    extArgFun l (NoArg f) = NoArg $ \(ls, os) -> (l : ls, f : os)
-    required = [l | ReqOption (Option _ l _ _) <- descrs]
-    subsetOf xs ys = all (`elem` ys) xs
-
 parseOptions :: [String] -> IO Options
 parseOptions args =
   case getOptReq options args of
@@ -159,8 +139,8 @@ parseOptions args =
 main :: IO ()
 main = do
   Options {..} <- parseOptions =<< getArgs
-  accountKey <- keyFromFile $ optAccoutKey
-  domainKey <- keyFromFile $ optDomainKey
+  accountKey <- keyFromFile optAccoutKey
+  domainKey <- keyFromFile optDomainKey
   cert <- runAcmeM accountKey optDirectoryUrl $ retrieveCert domainKey optWebroot optDomains
   L.putStr cert
 

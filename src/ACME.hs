@@ -20,46 +20,33 @@ module ACME
   , throwIfError
   ) where
 
-import           Control.Concurrent         (threadDelay)
-import           Control.Lens               as Lens
+import           Base64
+import           Control.Concurrent        (threadDelay)
+import           Control.Lens              as Lens
 import           Control.Monad.Catch
 import           Control.Monad.IO.Class
 import           Control.Monad.Loops
-import           Control.Monad.State        as State
-import           Crypto.Hash                as Hash
-import           Crypto.PubKey.RSA          (PrivateKey, private_pub)
-import           Crypto.PubKey.RSA.Types    (Error)
-import           Data.Aeson                 as JSON
-import qualified Data.Aeson.Lens            as JLens
-import           Data.Aeson.Types           (parseMaybe)
-import qualified Data.ByteString.Base64.URL as Base64
-import qualified Data.ByteString.Char8      as Char
-import qualified Data.ByteString.Lazy       as L
-import qualified Data.HashMap.Strict        as H
-import           Data.Monoid                ((<>))
-import           Data.Text                  hiding (filter)
-import           Data.Text.Encoding         (decodeUtf8)
-import qualified Data.Text.IO               as TextIO (writeFile)
-import           Data.Typeable
+import           Control.Monad.State       as State
+import           Crypto.Hash               as Hash
+import           Crypto.PubKey.RSA         (PrivateKey, private_pub)
+import           Crypto.PubKey.RSA.Types   (Error)
+import           Data.Aeson                as JSON
+import qualified Data.Aeson.Lens           as JLens
+import           Data.Aeson.Types          (parseMaybe)
+import qualified Data.ByteString.Lazy      as L
+import qualified Data.HashMap.Strict       as H
+import           Data.Text                 hiding (filter)
+import qualified Data.Text.IO              as TextIO (writeFile)
 import           Data.X509
-import           Data.X509.PKCS10           hiding (subject)
+import           Data.X509.PKCS10          hiding (subject)
 import           FlatJWS
-import           Network.HTTP.Client        (HttpException (..))
-import           Network.HTTP.Types.Header  (HeaderName)
-import           Network.HTTP.Types.Status  (conflict409, created201)
-import           Network.Wreq               as Wreq
-import           Safe
-import           System.FilePath            ((</>))
-import           System.Timeout             (timeout)
-
-throwIfNot :: (MonadThrow m, Exception e) => e -> Bool -> m ()
-throwIfNot e b = if not b then throwM e else pure ()
-
-throwIfNothing :: (MonadThrow m, Exception e) => e -> Maybe a -> m a
-throwIfNothing e = maybe (throwM e) pure
-
-throwIfError :: (MonadThrow m, Exception e) => (a -> e) -> Either a b -> m b
-throwIfError f = either (throwM . f) pure
+import           Network.HTTP.Client       (HttpException (..))
+import           Network.HTTP.Types.Header (HeaderName)
+import           Network.HTTP.Types.Status (conflict409, created201)
+import           Network.Wreq              as Wreq
+import           System.FilePath           ((</>))
+import           System.Timeout            (timeout)
+import           Utils
 
 responseHeaderUtf8 :: (Applicative f, Contravariant f) => HeaderName -> (Text -> f Text) -> Response body -> f (Response body)
 responseHeaderUtf8 name = responseHeader name . to decodeUtf8
@@ -285,15 +272,6 @@ acmeNewHttp01Authz webroot domain = do
     noChallengeError = AuthorizationError "no http-01 challenge"
     isHttp01 ch = ch ^. chType . to (== "http-01")
 
--- FIXME: similar definition in FlatJWS
-encode64 :: Char.ByteString -> Text
-encode64 = decodeUtf8 . fst . Char.spanEnd (== '=') . Base64.encode
-
-unfoldUntilM :: (Monad m) => (a -> Bool) -> (a -> m a) -> a -> m [a]
-unfoldUntilM p f v
-  | p v       = return [v]
-  | otherwise = f v >>= \v' -> (v:) <$> unfoldUntilM p f v'
-
 -- TODO: limit the number of followed links
 followUpLinks :: Response L.ByteString -> AcmeM [L.ByteString]
 followUpLinks response = do
@@ -307,12 +285,13 @@ followUpLinks response = do
 acmeNewCert :: CertificationRequest -> AcmeM CertificateChain
 acmeNewCert csr = do
   url <- unpack . newCertUrl <$> ensureDirectory
-  resNew <- acmeSignedPost url $ resourceNewCert $ encode64 $ toDER csr
+  resNew <- acmeSignedPost url $ resourceNewCert $ base64 $ toDER csr
   location <- certLocErr `throwIfNothing` (resNew ^? responseHeaderString "Location")
   resCert <- liftIO $ iterateUntilM statusCreated (const $ Wreq.get location) resNew
   chain <- followUpLinks resCert
   decodeChain $ CertificateChainRaw $ L.toStrict <$> chain
   where
+    base64 = decodeUtf8 . getByteString . encodeUnpad64 
     statusCreated r = r ^. responseStatus == created201
     certLocErr = AuthorizationError "certificate location missing"
     decodeChain chain = (CertError . show) `throwIfError` decodeCertificateChain chain

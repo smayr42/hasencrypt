@@ -28,7 +28,7 @@ instance ASN1Object PKCS1PubKey where
            : End Sequence:xs
            ) =
     Right
-      ( PKCS1PubKey $
+      ( PKCS1PubKey
           PublicKey { public_size = calculate_modulus modulus 1
                     , public_n    = modulus
                     , public_e    = pubexp
