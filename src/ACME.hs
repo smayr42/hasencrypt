@@ -33,7 +33,7 @@ import qualified Data.Aeson.Lens           as JLens
 import           Data.Aeson.Types          (parseMaybe)
 import qualified Data.ByteString.Lazy      as L
 import qualified Data.HashMap.Strict       as H
-import           Data.Text                 hiding (filter)
+import           Data.Text                 as Text hiding (filter, map)
 import qualified Data.Text.IO              as TextIO (writeFile)
 import           Data.X509
 import           Data.X509.PKCS10          hiding (subject)
@@ -71,15 +71,17 @@ data Challenge = Challenge
   , _chUri    :: Text
   , _chToken  :: Text
   , _chStatus :: Text
+  , _chError  :: Maybe Value
   } deriving (Eq, Show)
 makeLenses ''Challenge
 
 instance FromJSON Challenge where
   parseJSON (Object o) =
-    Challenge <$> o.: "type"
-              <*> o.: "uri"
-              <*> o.: "token"
-              <*> o.: "status"
+    Challenge <$> o .: "type"
+              <*> o .: "uri"
+              <*> o .: "token"
+              <*> o .: "status"
+              <*> o .:? "error"
   parseJSON _ = mzero
 
 data AcmeState = AcmeState
@@ -102,7 +104,13 @@ data AcmeException =
   | CertError String
   deriving (Show, Typeable)
 
-instance Exception AcmeException
+instance Exception AcmeException where
+  displayException (RSAError e) = "RSA error: " ++ show e
+  displayException (NonceError e) = "Nonce error: " ++ e
+  displayException (RegistrationError e) = "Registration error: " ++ e
+  displayException (AuthorizationError e) = "Authorization error: " ++ e
+  displayException (JWSError e) = "JWS error: " ++ e
+  displayException (CertError e) = "Certificate error: " ++ e
 
 newtype AcmeT s a = AcmeT { _runAcmeT :: StateT s IO a }
   deriving (Functor, Applicative, Monad, MonadIO, MonadThrow, MonadState s)
@@ -238,14 +246,16 @@ acmeAwaitAuthz url = do
   res <- acmeTimeout 15 $ iterateUntil notPending $ do
     liftIO $ threadDelay $ 1000 * 500
     fmap (^. responseBody) . asJSON =<< liftIO (Wreq.get url)
-  challenge <- timeoutErr `throwIfNothing` res
-  revokedErr `throwIfNot` isValid challenge
-  return challenge
+  ch <- timeoutErr `throwIfNothing` res
+  revokedErr ch `throwIfNot` isValid ch
+  return ch
   where
-    notPending challenge = challenge ^. chStatus /= "pending"
-    isValid challenge = challenge ^. chStatus == "valid"
+    notPending ch = ch ^. chStatus /= "pending"
+    isValid ch = ch ^. chStatus == "valid"
     timeoutErr = AuthorizationError "challenge timed out"
-    revokedErr = AuthorizationError "authorization was revoked"
+    revokedErr ch =
+      AuthorizationError $
+        ch ^. chError . _Just . JLens.key "detail" . JLens._String . to unpack
 
 -- request a new authorization and return the location of the created resource and a list of challenges
 -- TODO: handle nontrivial combination policies

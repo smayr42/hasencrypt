@@ -47,11 +47,11 @@ instance ASN1Object PKCS1PubKey where
            : xs
            ) =
     let inner = either strError fromASN1 $ decodeASN1' BER bs
-        strError = Left . ("fromASN1: RSA.PublicKey: " ++) . show
+        strError = Left . ("failed to decode public key: " ++) . show
     in either Left (\(k, _) -> Right (k, xs)) inner
 
   fromASN1 _ =
-    Left "fromASN1: RSA.PublicKey: unexpected format"
+    Left "failed to decode public key: unexpected format"
 
 instance ASN1Object PKCS1PrivKey where
   toASN1 (PKCS1PrivKey privKey) xs =
@@ -107,9 +107,9 @@ instance ASN1Object PKCS1PrivKey where
            : xs
            ) =
     let inner = either strError fromASN1 $ decodeASN1' BER bs
-        strError = Left . ("fromASN1: RSA.PrivateKey: " ++) . show
+        strError = Left . ("failed to decode private key: " ++) . show
     in either Left (\(k, _) -> Right (k, xs)) inner
 
   fromASN1 _ =
-    Left "fromASN1: RSA.PrivateKey: unexpected format"
+    Left "failed to decode private key: unexpected format"
 
