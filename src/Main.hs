@@ -21,7 +21,6 @@ import qualified Data.Text                as T
 import           Data.X509
 import           Data.X509.PKCS10         as CSR hiding (subject)
 import           PKCS1
-import           System.Console.GetOpt
 import           System.Environment       (getArgs, getProgName)
 import           System.Exit              (die)
 import           System.IO                (stderr)

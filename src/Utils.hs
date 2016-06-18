@@ -11,6 +11,7 @@ module Utils
   , getOptReq
 
   , module Exports
+  , module GetOpt
   ) where
 
 import           Control.Arrow         ((***))
@@ -24,7 +25,7 @@ import           Data.Text.Encoding    as Exports (decodeUtf8, encodeUtf8)
 import           Data.Tuple            (swap)
 import           Data.Typeable         as Exports
 import           Safe                  as Exports
-import           System.Console.GetOpt
+import           System.Console.GetOpt as GetOpt
 
 throwIfNot :: (MonadThrow m, Exception e) => e -> Bool -> m ()
 throwIfNot e b = if not b then throwM e else pure ()
