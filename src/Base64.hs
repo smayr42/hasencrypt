@@ -5,10 +5,10 @@ module Base64
   ( ByteString64(..)
   , toBase64
   , fromBase64
-  , encodeUnpad64
-  , decode64
   , ToBase64
   , FromBase64
+  , encodeUnpad64
+  , decode64
   ) where
 
 import           Data.Aeson                 as JSON

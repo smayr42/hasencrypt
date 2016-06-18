@@ -15,9 +15,6 @@ module ACME
   , chUri
   , chToken
   , chStatus
-  , throwIfNot
-  , throwIfNothing
-  , throwIfError
   ) where
 
 import           Base64
