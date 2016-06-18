@@ -243,7 +243,7 @@ acmeTimeout sec (AcmeT f) = do
 -- wait until an authorization is valid or revoked
 acmeAwaitAuthz :: String -> AcmeM Challenge
 acmeAwaitAuthz url = do
-  res <- acmeTimeout 15 $ iterateUntil notPending $ do
+  res <- acmeTimeout 30 $ iterateUntil notPending $ do
     liftIO $ threadDelay $ 1000 * 500
     fmap (^. responseBody) . asJSON =<< liftIO (Wreq.get url)
   ch <- timeoutErr `throwIfNothing` res
