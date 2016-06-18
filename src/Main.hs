@@ -72,7 +72,7 @@ logStrLn :: (MonadIO m, MonadState Int m, PrintfArg r) => String -> r -> m ()
 logStrLn format args = do
   step <- State.get
   liftIO $ hPrintf stderr ("[%v] " ++ format ++ "\n") step args
-  State.put $ step + 1
+  State.put $ succ step
 
 retrieveCert :: PrivateKey -> String -> [String] -> AcmeM L.ByteString
 retrieveCert domainKey webroot domains =
@@ -98,20 +98,26 @@ data Options = Options { optDirectoryUrl :: String
                        , optDomains      :: [String]
                        }
 
-defaultDirectoryUrl :: String
-defaultDirectoryUrl = "https://acme-staging.api.letsencrypt.org/directory"
+defaultStagingDirectory :: String
+defaultStagingDirectory = "https://acme-staging.api.letsencrypt.org/directory"
+
+defaultDirectory :: String
+defaultDirectory = "https://acme-v01.api.letsencrypt.org/directory"
 
 defaultOptions :: Options
-defaultOptions = Options defaultDirectoryUrl mzero mzero mzero mzero
+defaultOptions = Options defaultStagingDirectory mzero mzero mzero mzero
 
 options :: [OptDescrEx (Options -> Options)]
 options =
   [ OptOption $ Option ['D'] ["directory-url"]
-    (ReqArg
-      (\o opts -> opts { optDirectoryUrl = o })
+    (OptArg
+      (\o opts -> opts { optDirectoryUrl = fromMaybe defaultDirectory o })
       "URL"
-    ) "The ACME directory url.\n\
-      \By default the Let's Encrypt staging directory is used."
+    ) "The ACME directory URL.\n\
+      \If no URL is specified, the Let's Encrypt directory is used.\n\
+      \For testing purposes this option can be omitted, in which case the\n\
+      \Let's Encrypt staging directory is used. Note that certificates\n\
+      \issued by the staging environment are not trusted."
   , ReqOption $ Option ['w'] ["webroot"]
     (ReqArg
       (\o opts -> opts { optWebroot = o })
