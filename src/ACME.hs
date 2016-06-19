@@ -283,7 +283,6 @@ acmeNewHttp01Authz webroot domain = do
     noChallengeError = AuthorizationError "no http-01 challenge"
     isHttp01 ch = ch ^. chType . to (== "http-01")
 
--- TODO: limit the number of followed links
 followUpLinks :: Response L.ByteString -> AcmeM [L.ByteString]
 followUpLinks response = do
   responses <- unfoldUntilM (not . hasUpLink) (liftIO .  Wreq.get . relUpLink) response
@@ -299,13 +298,14 @@ acmeNewCert csr = do
   resNew <- acmeSignedPost url $ resourceNewCert $ base64 $ toDER csr
   location <- certLocErr `throwIfNothing` (resNew ^? responseHeaderString "Location")
   resCert <- liftIO $ iterateUntilM statusCreated (const $ Wreq.get location) resNew
-  chain <- followUpLinks resCert
+  chain <- throwIfNothing timeoutErr =<< acmeTimeout 30 (followUpLinks resCert)
   decodeChain $ CertificateChainRaw $ L.toStrict <$> chain
   where
     base64 = decodeUtf8 . getByteString . encodeUnpad64
     statusCreated r = r ^. responseStatus == created201
     certLocErr = AuthorizationError "certificate location missing"
     decodeChain chain = (CertError . show) `throwIfError` decodeCertificateChain chain
+    timeoutErr = CertError "timeout when retrieving the certificate chain"
 
 runAcmeM :: PrivateKey -> String -> AcmeM a -> IO a
 runAcmeM accountKey dirUrl (AcmeT m) = evalStateT m $ initialAcmeState accountKey dirUrl
