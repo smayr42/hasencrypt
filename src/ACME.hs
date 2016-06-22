@@ -42,6 +42,7 @@ import           Network.HTTP.Client       (HttpException (..))
 import           Network.HTTP.Types.Header (HeaderName)
 import           Network.HTTP.Types.Status (conflict409, created201)
 import           Network.Wreq              as Wreq
+import           System.Directory
 import           System.FilePath           ((</>))
 import           System.Timeout            (timeout)
 import           Utils
@@ -113,7 +114,7 @@ instance Exception AcmeException where
   displayException (CertError e) = "Certificate error: " ++ e
 
 newtype AcmeT s a = AcmeT { _runAcmeT :: StateT s IO a }
-  deriving (Functor, Applicative, Monad, MonadIO, MonadThrow, MonadState s)
+  deriving (Functor, Applicative, Monad, MonadIO, MonadThrow, MonadCatch, MonadMask, MonadState s)
 
 type AcmeM a = AcmeT AcmeState a
 
@@ -221,10 +222,14 @@ acmeHttp01Challenge :: FilePath -> Challenge -> AcmeM Challenge
 acmeHttp01Challenge webroot challenge = do
   chTypeErr `throwIfNot` (challenge ^. chType == "http-01")
   keyAuthz <- makeKeyAuthz <$> use key
-  liftIO $ TextIO.writeFile (webroot </> challenge ^. chToken . to unpack) keyAuthz
-  _ <- acmeSignedPost uri $ resourceChallenge "http-01" keyAuthz
-  acmeAwaitAuthz uri
+  do
+    liftIO $ TextIO.writeFile fileName keyAuthz
+    _ <- acmeSignedPost uri $ resourceChallenge "http-01" keyAuthz
+    acmeAwaitAuthz uri
+  `finally`
+    liftIO (removeFile fileName)
   where
+    fileName = webroot </> challenge ^. chToken . to unpack
     uri = challenge ^. chUri . to unpack
     makeKeyAuthz priv = challenge ^. chToken <> "." <> makeThumbprint priv
     makeThumbprint priv = jwkThumbprint Hash.SHA256 (private_pub priv)
