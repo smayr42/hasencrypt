@@ -127,7 +127,7 @@ options =
     (ReqArg
       (\o opts -> opts { optAccoutKey = o })
       "FILE"
-    ) "Key for registering the ACME account."
+    ) "The ACME account key."
   , ReqOption $ Option ['d'] ["domain-key"]
     (ReqArg
       (\o opts -> opts { optDomainKey = o })

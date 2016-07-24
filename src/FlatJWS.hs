@@ -110,7 +110,7 @@ instance FromJSON AlgKey where
   parseJSON (Object o) = maybe mzero pure $ objectToAlg o
   parseJSON _ = mzero
 
-instance ToBase64 a => ToJSON (SignedJWS a) where
+instance ToJSON (SignedJWS a) where
   toJSON SignedJWS{..} =
     let JWS{..} = jws in
       object $
@@ -120,7 +120,7 @@ instance ToBase64 a => ToJSON (SignedJWS a) where
       ++ maybeValue "protected" protected
       ++ maybeValue "header" header
       where
-        maybeValue key = maybe [] (\v -> [ key .= v])
+        maybeValue key = maybe [] (\v -> [ key .= v ])
 
 instance FromJSON a => FromJSON (JWS B64Data a) where
   parseJSON (Object v) =
