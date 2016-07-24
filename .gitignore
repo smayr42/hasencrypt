@@ -1,6 +1,7 @@
 /dist/
 *.swp
 *.key
+*.crt
 webroot
 .cabal-sandbox/
 cabal.sandbox.config

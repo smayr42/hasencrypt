@@ -24,6 +24,7 @@ import           Data.X509
 import           Data.X509.File
 import           Data.X509.PKCS10         as CSR hiding (subject)
 import           PKCS1
+import           System.Directory         (doesFileExist)
 import           System.Environment       (getArgs, getProgName)
 import           System.Exit              (die)
 import           System.Hourglass
@@ -169,18 +170,19 @@ parseOptions args =
       else
         return $ (foldl (flip id) defaultOptions opts) { optDomains = domains }
 
-renewRequired :: (MonadIO m) => Options -> m Bool
+renewRequired :: Options -> IO Bool
 renewRequired opts =
   case optRenewCert opts of
     Nothing -> pure True
-    Just certPath -> do
-      certs :: [SignedCertificate] <- liftIO $ readSignedObject certPath
-      time <- liftIO dateCurrent
-      pure $ any (isInvalid time . getCertificate) certs
-      where
-        isInvalid currentTime cert = (validityEnd cert `timeDiff` renewStart currentTime) < 0
-        validityEnd = snd . certValidity
-        renewStart currentTime = currentTime `timeAdd` optRenewDuration opts
+    Just certPath -> doesFileExist certPath >>= \exists ->
+      if not exists then pure True else do
+        certs :: [SignedCertificate] <- readSignedObject certPath
+        time <- dateCurrent
+        pure $ any (isInvalid time . getCertificate) certs
+        where
+          isInvalid currentTime cert = (validityEnd cert `timeDiff` renewStart currentTime) < 0
+          validityEnd = snd . certValidity
+          renewStart currentTime = currentTime `timeAdd` optRenewDuration opts
 
 main :: IO ()
 main = do
