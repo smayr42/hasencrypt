@@ -1,6 +1,7 @@
 {-# LANGUAGE FlexibleContexts      #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RecordWildCards       #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
 
 module Main (main) where
 
@@ -16,14 +17,17 @@ import           Data.ASN1.Types
 import qualified Data.ByteString          as B
 import qualified Data.ByteString.Char8    as Char
 import qualified Data.ByteString.Lazy     as L
+import           Data.Hourglass
 import           Data.PEM
 import qualified Data.Text                as T
 import           Data.X509
+import           Data.X509.File
 import           Data.X509.PKCS10         as CSR hiding (subject)
 import           PKCS1
 import           System.Environment       (getArgs, getProgName)
 import           System.Exit              (die)
-import           System.IO                (stderr)
+import           System.Hourglass
+import           System.IO                (hPutStrLn, stderr)
 import           Text.Printf
 import           Utils
 
@@ -91,11 +95,13 @@ retrieveCert domainKey webroot domains =
     where
       chainLength (CertificateChain c) = length c
 
-data Options = Options { optDirectoryUrl :: String
-                       , optWebroot      :: String
-                       , optAccoutKey    :: String
-                       , optDomainKey    :: String
-                       , optDomains      :: [String]
+data Options = Options { optDirectoryUrl  :: String
+                       , optWebroot       :: String
+                       , optAccoutKey     :: String
+                       , optDomainKey     :: String
+                       , optDomains       :: [String]
+                       , optRenewCert     :: Maybe FilePath
+                       , optRenewDuration :: Duration
                        }
 
 defaultStagingDirectory :: String
@@ -105,7 +111,9 @@ defaultDirectory :: String
 defaultDirectory = "https://acme-v01.api.letsencrypt.org/directory"
 
 defaultOptions :: Options
-defaultOptions = Options defaultStagingDirectory mzero mzero mzero mzero
+defaultOptions = Options defaultStagingDirectory mzero mzero mzero mzero mzero oneWeek
+  where
+    oneWeek = mempty { durationHours = 24 * 7 }
 
 options :: [OptDescrEx (Options -> Options)]
 options =
@@ -114,25 +122,35 @@ options =
       (\o opts -> opts { optDirectoryUrl = fromMaybe defaultDirectory o })
       "URL"
     ) "The ACME directory URL.\n\
-      \If no URL is specified, the Let's Encrypt directory is used.\n\
-      \For testing purposes this option can be omitted, in which case the\n\
-      \Let's Encrypt staging directory is used. Note that certificates\n\
-      \issued by the staging environment are not trusted."
+\If this option is specified without URL, the Let's Encrypt directory is\n\
+\used. For testing purposes this option can be omitted, in which case the\n\
+\Let's Encrypt staging directory is used. Note that certificates issued by\n\
+\the staging environment are not trusted.\n\n"
+
   , ReqOption $ Option ['w'] ["webroot"]
     (ReqArg
       (\o opts -> opts { optWebroot = o })
       "DIR"
-    ) "Path to the webroot for responding to http challenges."
+    ) "Path to the webroot for responding to http challenges.\n\n"
+
   , ReqOption $ Option ['a'] ["account-key"]
     (ReqArg
       (\o opts -> opts { optAccoutKey = o })
       "FILE"
-    ) "The ACME account key."
+    ) "The ACME account key.\n\n"
+
   , ReqOption $ Option ['d'] ["domain-key"]
     (ReqArg
       (\o opts -> opts { optDomainKey = o })
       "FILE"
-    ) "Key for issuing the certificate."
+    ) "Key for issuing the certificate.\n\n"
+
+  , OptOption $ Option ['r'] ["renew"]
+    (ReqArg
+      (\o opts -> opts { optRenewCert = Just o})
+      "FILE"
+    ) "An optional certificate that is checked for impending expiration.\n\
+\If renewal is required the certificate is replaced by a newly issued one."
   ]
 
 parseOptions :: [String] -> IO Options
@@ -151,12 +169,31 @@ parseOptions args =
       else
         return $ (foldl (flip id) defaultOptions opts) { optDomains = domains }
 
+renewRequired :: (MonadIO m) => Options -> m Bool
+renewRequired opts =
+  case optRenewCert opts of
+    Nothing -> pure True
+    Just certPath -> do
+      certs :: [SignedCertificate] <- liftIO $ readSignedObject certPath
+      time <- liftIO dateCurrent
+      pure $ any (isInvalid time . getCertificate) certs
+      where
+        isInvalid currentTime cert = (validityEnd cert `timeDiff` renewStart currentTime) < 0
+        validityEnd = snd . certValidity
+        renewStart currentTime = currentTime `timeAdd` optRenewDuration opts
+
 main :: IO ()
 main = do
-  Options {..} <- parseOptions =<< getArgs
+  opts @ Options {..} <- parseOptions =<< getArgs
   flip catchAll (die . displayException) $ do
-    accountKey <- keyFromFile optAccoutKey
-    domainKey <- keyFromFile optDomainKey
-    cert <- runAcmeM accountKey optDirectoryUrl $ retrieveCert domainKey optWebroot optDomains
-    L.putStr cert
+    renew <- renewRequired opts
+    if not renew then
+      hPutStrLn stderr $ "Certificate '" <> fromMaybe "" optRenewCert <> "' does not require renewal."
+    else do
+      accountKey <- keyFromFile optAccoutKey
+      domainKey <- keyFromFile optDomainKey
+      cert <- runAcmeM accountKey optDirectoryUrl $ retrieveCert domainKey optWebroot optDomains
+      case optRenewCert of
+        Nothing -> L.putStr cert
+        Just certPath -> L.writeFile certPath cert
 
