@@ -178,11 +178,11 @@ renewRequired opts =
       if not exists then pure True else do
         certs :: [SignedCertificate] <- readSignedObject certPath
         time <- dateCurrent
-        pure $ any (isInvalid time . getCertificate) certs
+        pure $ any (isExpired time . getCertificate) certs
         where
-          isInvalid currentTime cert = (validityEnd cert `timeDiff` renewStart currentTime) < 0
+          isExpired time cert = (validityEnd cert `timeDiff` renewStart time) < 0
           validityEnd = snd . certValidity
-          renewStart currentTime = currentTime `timeAdd` optRenewDuration opts
+          renewStart time = time `timeAdd` optRenewDuration opts
 
 main :: IO ()
 main = do
