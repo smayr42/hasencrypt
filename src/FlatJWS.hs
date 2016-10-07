@@ -1,6 +1,6 @@
 {-# LANGUAGE FlexibleInstances   #-}
+{-# LANGUAGE NamedFieldPuns      #-}
 {-# LANGUAGE OverloadedStrings   #-}
-{-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving  #-}
 
@@ -68,7 +68,7 @@ data SignedJWS a = SignedJWS
   } deriving (Show)
 
 getSignedPayload :: SignedJWS c -> c
-getSignedPayload SignedJWS{..} = getData . payload $ jws
+getSignedPayload SignedJWS { jws = JWS { payload } } = getData payload 
 
 data AlgKey = RS256 { getPrivateKey :: PrivateKey }
 
@@ -108,19 +108,18 @@ instance ToJSON AlgKey where
 
 instance FromJSON AlgKey where
   parseJSON (Object o) = maybe mzero pure $ objectToAlg o
-  parseJSON _ = mzero
+  parseJSON _          = mzero
 
 instance ToJSON (SignedJWS a) where
-  toJSON SignedJWS{..} =
-    let JWS{..} = jws in
-      object $
-      [ "payload" .= payload
-      , "signature" .= toBase64 signature
-      ]
-      ++ maybeValue "protected" protected
-      ++ maybeValue "header" header
-      where
-        maybeValue key = maybe [] (\v -> [ key .= v ])
+  toJSON SignedJWS { jws = JWS { payload, protected, header }, signature } =
+    object $
+    [ "payload" .= payload
+    , "signature" .= toBase64 signature
+    ]
+    ++ maybeValue "protected" protected
+    ++ maybeValue "header" header
+    where
+      maybeValue key = maybe [] (\v -> [ key .= v ])
 
 instance FromJSON a => FromJSON (JWS B64Data a) where
   parseJSON (Object v) =
@@ -136,7 +135,7 @@ instance FromJSON a => FromJSON (SignedJWS a) where
   parseJSON _ = mzero
 
 signJWS :: (ToBase64 a, MonadRandom m) => AlgKey -> PlainJWS a -> m (Either Error (SignedJWS a))
-signJWS alg@(RS256 key) JWS{..} =
+signJWS alg@(RS256 key) JWS { header, protected, payload } =
   fmap (SignedJWS jws) <$> signature
   where
     jws = JWS payloadB64 (Just protectedB64) header
@@ -148,18 +147,16 @@ signJWS alg@(RS256 key) JWS{..} =
     protectedObj = fromMaybe H.empty $ runIdentity <$> protected
 
 signedJWSAlgKey :: SignedJWS t -> Maybe AlgKey
-signedJWSAlgKey SignedJWS{..} =
+signedJWSAlgKey SignedJWS { jws = JWS { header, protected } } =
   headers >>= objectToAlg
   where
     headers = liftM2 (<>) (getData <$> protected) header
-    JWS{..} = jws
 
 signingInput :: SignedJWS a -> Char.ByteString
-signingInput SignedJWS{..} =
+signingInput SignedJWS { jws = JWS { protected, payload } } =
   getByteString $ protectedB64 <> "." <> getBase64Data payload
   where
     protectedB64 = fromMaybe "" $ getBase64Data <$> protected
-    JWS{..} = jws
 
 verifyJWS :: SignedJWS a -> Bool
 verifyJWS jws =
@@ -171,7 +168,7 @@ verifyJWS jws =
               input = signingInput jws
 
 jwkThumbprint :: forall a. HashAlgorithm a => a -> PublicKey -> Text
-jwkThumbprint _ PublicKey{..} =
+jwkThumbprint _ PublicKey{ public_e, public_n } =
   let input = "{\"e\":\"" <>
               toBase64 public_e <>
               "\",\"kty\":\"RSA\",\"n\":\"" <>
