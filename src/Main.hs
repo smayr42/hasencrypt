@@ -18,6 +18,7 @@ import qualified Data.ByteString          as B
 import qualified Data.ByteString.Char8    as Char
 import qualified Data.ByteString.Lazy     as L
 import           Data.Hourglass
+import           Data.List                (foldl')
 import           Data.PEM
 import qualified Data.Text                as T
 import           Data.X509
@@ -168,7 +169,7 @@ parseOptions args =
       if null domains then
         getProgName >>= dieWithUsage []
       else
-        return $ (foldl (flip id) defaultOptions opts) { optDomains = domains }
+        return $ (foldl' (flip id) defaultOptions opts) { optDomains = domains }
 
 renewRequired :: Options -> IO Bool
 renewRequired opts =
@@ -196,6 +197,6 @@ main = do
       domainKey <- keyFromFile optDomainKey
       cert <- runAcmeM accountKey optDirectoryUrl $ retrieveCert domainKey optWebroot optDomains
       case optRenewCert of
-        Nothing -> L.putStr cert
+        Nothing       -> L.putStr cert
         Just certPath -> L.writeFile certPath cert
 

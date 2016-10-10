@@ -18,6 +18,7 @@ import           Control.Arrow         ((***))
 import           Control.Monad         as Exports
 import           Control.Monad.Catch
 import qualified Data.ByteString       as B
+import           Data.List             (foldl')
 import           Data.Maybe            as Exports
 import           Data.Monoid           as Exports
 import           Data.String           as Exports
@@ -37,7 +38,7 @@ throwIfError :: (MonadThrow m, Exception e) => (a -> e) -> Either a b -> m b
 throwIfError f = either (throwM . f) pure
 
 bsToInteger :: B.ByteString -> Integer
-bsToInteger = B.foldl (\acc x -> acc * 256 + toInteger x) 0
+bsToInteger = B.foldl' (\acc x -> acc * 256 + toInteger x) 0
 
 integerToBS :: Integer -> B.ByteString
 integerToBS = B.reverse . B.unfoldr (fmap swap <$> gen)
@@ -56,14 +57,14 @@ getOptReq :: [OptDescrEx a] -> [String] -> (Bool, [a], [String], [String])
 getOptReq descrs args =
   case getOpt Permute options' args of
     (opts, rest, errs) ->
-        let (present, opts') = foldl (flip id) ([], []) opts
+        let (present, opts') = foldl' (flip id) ([], []) opts
         in (required `subsetOf` present, opts', rest, errs)
   where
     options' = extOptFun . getOptDescr <$> descrs
     extOptFun (Option s l arg d) = Option s l (extArgFun l arg) d
     extArgFun l (ReqArg f s) = ReqArg (\o -> (:) l *** (:) (f o)) s
     extArgFun l (OptArg f s) = OptArg (\o -> (:) l *** (:) (f o)) s
-    extArgFun l (NoArg f) = NoArg $ (:) l *** (:) f
+    extArgFun l (NoArg f)    = NoArg $ (:) l *** (:) f
     required = [l | ReqOption (Option _ l _ _) <- descrs]
     subsetOf xs ys = all (`elem` ys) xs
 
