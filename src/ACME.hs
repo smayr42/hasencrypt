@@ -1,5 +1,6 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE Rank2Types                 #-}
 {-# LANGUAGE TemplateHaskell            #-}
 
 module ACME
@@ -47,9 +48,9 @@ import           System.FilePath           ((</>))
 import           System.Timeout            (timeout)
 import           Utils
 
-responseHeaderUtf8 :: (Applicative f, Contravariant f) => HeaderName -> (Text -> f Text) -> Response body -> f (Response body)
+responseHeaderUtf8 :: HeaderName -> Fold (Response body) Text
 responseHeaderUtf8 name = responseHeader name . to decodeUtf8
-responseHeaderString :: (Applicative f, Contravariant f) => HeaderName -> (String -> f String) -> Response body -> f (Response body)
+responseHeaderString :: HeaderName -> Fold (Response body) String
 responseHeaderString name = responseHeaderUtf8 name . to unpack
 
 data Directory = Directory
@@ -106,12 +107,12 @@ data AcmeException =
   deriving (Show, Typeable)
 
 instance Exception AcmeException where
-  displayException (RSAError e) = "RSA error: " ++ show e
-  displayException (NonceError e) = "Nonce error: " ++ e
-  displayException (RegistrationError e) = "Registration error: " ++ e
+  displayException (RSAError e)           = "RSA error: " ++ show e
+  displayException (NonceError e)         = "Nonce error: " ++ e
+  displayException (RegistrationError e)  = "Registration error: " ++ e
   displayException (AuthorizationError e) = "Authorization error: " ++ e
-  displayException (JWSError e) = "JWS error: " ++ e
-  displayException (CertError e) = "Certificate error: " ++ e
+  displayException (JWSError e)           = "JWS error: " ++ e
+  displayException (CertError e)          = "Certificate error: " ++ e
 
 newtype AcmeT s a = AcmeT { _runAcmeT :: StateT s IO a }
   deriving (Functor, Applicative, Monad, MonadIO, MonadThrow, MonadCatch, MonadMask, MonadState s)
@@ -241,7 +242,7 @@ acmeTimeout sec (AcmeT f) = do
   res <- liftIO $ timeout usec $ runStateT f s
   case res of
        Just (a,s') -> State.put s' >> return (Just a)
-       Nothing -> nonce Lens..= Nothing >> return Nothing
+       Nothing     -> nonce Lens..= Nothing >> return Nothing
   where
     usec = 1000000 * sec
 
