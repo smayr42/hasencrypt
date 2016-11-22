@@ -42,7 +42,8 @@ import           FlatJWS
 import           Network.HTTP.Client       (HttpException (..))
 import           Network.HTTP.Types.Header (HeaderName)
 import           Network.HTTP.Types.Status (conflict409, created201)
-import           Network.Wreq              as Wreq
+import           Network.Wreq
+import qualified Network.Wreq.Session      as S
 import           System.Directory
 import           System.FilePath           ((</>))
 import           System.Timeout            (timeout)
@@ -91,10 +92,11 @@ data AcmeState = AcmeState
   , _directory    :: Maybe Directory
   , _key          :: PrivateKey
   , _directoryUrl :: String
+  , _session      :: S.Session
   } deriving Show
 makeLenses ''AcmeState
 
-initialAcmeState :: PrivateKey -> String -> AcmeState
+initialAcmeState :: PrivateKey -> String -> S.Session -> AcmeState
 initialAcmeState = AcmeState Nothing Nothing
 
 data AcmeException =
@@ -163,14 +165,15 @@ acmeSignedPostWith :: ToJSON a => Options -> String -> a -> AcmeM (Response L.By
 acmeSignedPostWith opts url payload = do
   n <- ensureNonce
   k <- use key
+  sess <- use session
   signed <- throwIfError RSAError =<< signJWS (RS256 k) (makeJWS n)
-  acmeRequest $ postWith opts url $ toJSON signed
+  acmeRequest $ S.postWith opts sess url $ toJSON signed
   where
     makeJWS n = plainJWS (encode payload) (Just $ makeHeader n) Nothing
     makeHeader n = H.fromList [("nonce", String n)]
 
 acmeSignedPost :: ToJSON a => String -> a -> AcmeM (Response L.ByteString)
-acmeSignedPost = acmeSignedPostWith Wreq.defaults
+acmeSignedPost = acmeSignedPostWith defaults
 
 ensureDirectory :: AcmeM Directory
 ensureDirectory = do
@@ -178,7 +181,8 @@ ensureDirectory = do
   case currentDirectory of
     Nothing -> do
       url <- use directoryUrl
-      r <- (^. responseBody) <$> (asJSON =<< acmeRequest (Wreq.get url))
+      sess <- use session
+      r <- (^. responseBody) <$> (asJSON =<< acmeRequest (S.get sess url))
       directory Lens..= Just r
       return r
     Just dir -> return dir
@@ -189,14 +193,15 @@ ensureNonce = do
   case currentNonce of
     Nothing -> do
       url <- use directoryUrl
-      nextNonce <- acmeRequest (head_ url) >> use nonce
+      sess <- use session
+      nextNonce <- acmeRequest (S.head_ sess url) >> use nonce
       NonceError "head request did not return nonce" `throwIfNothing` nextNonce
     Just n -> return n
 
 -- perform registration and return the location of the created resource
 acmeNewReg :: AcmeM Text
 acmeNewReg = do
-  let opts = Wreq.defaults & Wreq.checkStatus .~ Just statusNewReg
+  let opts = defaults & checkStatus .~ Just statusNewReg
   url <- unpack . newRegUrl <$> ensureDirectory
   res <- acmeSignedPostWith opts url resourceNewReg
   RegistrationError "registration location missing" `throwIfNothing` (res ^? responseHeaderUtf8 "Location")
@@ -249,9 +254,10 @@ acmeTimeout sec (AcmeT f) = do
 -- wait until an authorization is valid or revoked
 acmeAwaitAuthz :: String -> AcmeM Challenge
 acmeAwaitAuthz url = do
+  sess <- use session
   res <- acmeTimeout 30 $ iterateUntil notPending $ do
     liftIO $ threadDelay $ 1000 * 500
-    fmap (^. responseBody) . asJSON =<< liftIO (Wreq.get url)
+    fmap (^. responseBody) . asJSON =<< liftIO (S.get sess url)
   ch <- timeoutErr `throwIfNothing` res
   revokedErr ch `throwIfNot` isValid ch
   return ch
@@ -291,7 +297,8 @@ acmeNewHttp01Authz webroot domain = do
 
 followUpLinks :: Response L.ByteString -> AcmeM [L.ByteString]
 followUpLinks response = do
-  responses <- unfoldUntilM (not . hasUpLink) (liftIO .  Wreq.get . relUpLink) response
+  sess <- use session
+  responses <- unfoldUntilM (not . hasUpLink) (liftIO .  S.get sess . relUpLink) response
   return $ responses ^.. folded . responseBody
   where
     relUpLink r = r ^. responseLink "rel" "up" . linkURL . to decodeUtf8 . to unpack
@@ -303,7 +310,8 @@ acmeNewCert csr = do
   url <- unpack . newCertUrl <$> ensureDirectory
   resNew <- acmeSignedPost url $ resourceNewCert $ base64 $ toDER csr
   location <- certLocErr `throwIfNothing` (resNew ^? responseHeaderString "Location")
-  resCert <- liftIO $ iterateUntilM statusCreated (const $ Wreq.get location) resNew
+  sess <- use session
+  resCert <- liftIO $ iterateUntilM statusCreated (const $ S.get sess location) resNew
   chain <- throwIfNothing timeoutErr =<< acmeTimeout 30 (followUpLinks resCert)
   decodeChain $ CertificateChainRaw $ L.toStrict <$> chain
   where
@@ -314,5 +322,6 @@ acmeNewCert csr = do
     timeoutErr = CertError "timeout when retrieving the certificate chain"
 
 runAcmeM :: PrivateKey -> String -> AcmeM a -> IO a
-runAcmeM accountKey dirUrl (AcmeT m) = evalStateT m $ initialAcmeState accountKey dirUrl
+runAcmeM accountKey dirUrl (AcmeT m) =
+  S.withAPISession $ evalStateT m . initialAcmeState accountKey dirUrl
 
