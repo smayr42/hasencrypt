@@ -80,8 +80,8 @@ logStrLn format args = do
   liftIO $ hPrintf stderr ("[%v] " ++ format ++ "\n") step args
   State.put $ succ step
 
-retrieveCert :: PrivateKey -> String -> [String] -> AcmeM L.ByteString
-retrieveCert domainKey webroot domains =
+retrieveCert :: ChainFetchOptions -> PrivateKey -> String -> [String] -> AcmeM L.ByteString
+retrieveCert fetchOpts domainKey webroot domains =
   flip evalStateT 1 $ do
     regUrl <- lift acmeNewReg
     logStrLn "Registered account with url '%v'" regUrl
@@ -91,7 +91,7 @@ retrieveCert domainKey webroot domains =
       logStrLn "Performing HTTP validation for domain '%v'..." domain
       _ <- lift $ acmeNewHttp01Authz webroot $ T.pack domain
       logStrLn "Completed challenge for domain '%v'" domain
-    chain <- lift (acmeNewCert =<< makeCSR domainKey domains)
+    chain <- lift (acmeNewCert fetchOpts =<< makeCSR domainKey domains)
     logStrLn "Obtained certificate chain of length %v" (chainLength chain)
     return $ certChainToPEM chain
     where
@@ -104,6 +104,7 @@ data Options = Options { optDirectoryUrl  :: String
                        , optDomains       :: [String]
                        , optRenewCert     :: Maybe FilePath
                        , optRenewDuration :: Duration
+                       , optFetchChain    :: ChainFetchOptions
                        }
 
 defaultStagingDirectory :: String
@@ -113,7 +114,7 @@ defaultDirectory :: String
 defaultDirectory = "https://acme-v01.api.letsencrypt.org/directory"
 
 defaultOptions :: Options
-defaultOptions = Options defaultStagingDirectory mzero mzero mzero mzero mzero oneWeek
+defaultOptions = Options defaultStagingDirectory mzero mzero mzero mzero mzero oneWeek ChainFull
   where
     oneWeek = mempty { durationHours = 24 * 7 }
 
@@ -124,10 +125,10 @@ options =
       (\o opts -> opts { optDirectoryUrl = fromMaybe defaultDirectory o })
       "URL"
     ) "The ACME directory URL.\n\
-\If this option is specified without URL, the Let's Encrypt directory is\n\
-\used. For testing purposes this option can be omitted, in which case the\n\
-\Let's Encrypt staging directory is used. Note that certificates issued by\n\
-\the staging environment are not trusted.\n\n"
+      \If this option is specified without URL, the Let's Encrypt directory is\n\
+      \used. For testing purposes this option can be omitted, in which case the\n\
+      \Let's Encrypt staging directory is used. Note that certificates issued by\n\
+      \the staging environment are not trusted.\n\n"
 
   , ReqOption $ Option ['w'] ["webroot"]
     (ReqArg
@@ -149,10 +150,15 @@ options =
 
   , OptOption $ Option ['r'] ["renew"]
     (ReqArg
-      (\o opts -> opts { optRenewCert = Just o})
+      (\o opts -> opts { optRenewCert = Just o })
       "FILE"
     ) "An optional certificate that is checked for impending expiration.\n\
-\If renewal is required the certificate is replaced by a newly issued one."
+      \If renewal is required the certificate is replaced by a newly issued one.\n\n"
+
+  , OptOption $ Option ['h'] ["head"]
+    (NoArg
+      (\opts -> opts { optFetchChain = ChainHead })
+    ) "Fetch only the end-user certificate and not the full certificate chain."
   ]
 
 parseOptions :: [String] -> IO Options
@@ -195,7 +201,7 @@ main = do
     else do
       accountKey <- keyFromFile optAccoutKey
       domainKey <- keyFromFile optDomainKey
-      cert <- runAcmeM accountKey optDirectoryUrl $ retrieveCert domainKey optWebroot optDomains
+      cert <- runAcmeM accountKey optDirectoryUrl $ retrieveCert optFetchChain domainKey optWebroot optDomains
       case optRenewCert of
         Nothing       -> L.putStr cert
         Just certPath -> L.writeFile certPath cert

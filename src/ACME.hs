@@ -16,6 +16,7 @@ module ACME
   , chUri
   , chToken
   , chStatus
+  , ChainFetchOptions(..)
   ) where
 
 import           Base64
@@ -304,17 +305,21 @@ followUpLinks response = do
     relUpLink r = r ^. responseLink "rel" "up" . linkURL . to decodeUtf8 . to unpack
     hasUpLink = has $ responseLink "rel" "up"
 
--- request a new certificate and return it as the head of a (hopefully complete) certificate chain
-acmeNewCert :: CertificationRequest -> AcmeM CertificateChain
-acmeNewCert csr = do
+data ChainFetchOptions = ChainFull
+                       | ChainHead
+
+acmeNewCert :: ChainFetchOptions -> CertificationRequest -> AcmeM CertificateChain
+acmeNewCert fetchOpts csr = do
   url <- unpack . newCertUrl <$> ensureDirectory
   resNew <- acmeSignedPost url $ resourceNewCert $ base64 $ toDER csr
   location <- certLocErr `throwIfNothing` (resNew ^? responseHeaderString "Location")
   sess <- use session
   resCert <- liftIO $ iterateUntilM statusCreated (const $ S.get sess location) resNew
-  chain <- throwIfNothing timeoutErr =<< acmeTimeout 30 (followUpLinks resCert)
+  chain <- throwIfNothing timeoutErr =<< acmeTimeout 30 (fetchChain fetchOpts resCert)
   decodeChain $ CertificateChainRaw $ L.toStrict <$> chain
   where
+    fetchChain ChainFull resCert = followUpLinks resCert
+    fetchChain ChainHead resCert = return [resCert ^. responseBody]
     base64 = decodeUtf8 . getByteString . encodeUnpad64
     statusCreated r = r ^. responseStatus == created201
     certLocErr = AuthorizationError "certificate location missing"
