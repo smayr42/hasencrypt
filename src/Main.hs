@@ -67,7 +67,7 @@ certChainToPEM chain =
 makeCSR :: PrivateKey -> [String] -> AcmeM CertificationRequest
 makeCSR domainPriv domains = do
   csr <- liftIO $ generateCSR subject extAttrs keyPair SHA256
-  PKCSError `throwIfError` csr
+  (PKCSError . show) `throwIfError` csr
   where
     keyPair = KeyPairRSA (private_pub domainPriv) domainPriv
     subject = X520Attributes []
@@ -205,4 +205,3 @@ main = do
       case optRenewCert of
         Nothing       -> L.putStr cert
         Just certPath -> L.writeFile certPath cert
-

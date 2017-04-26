@@ -33,6 +33,7 @@ import           Crypto.Random.Types
 import           Data.Aeson                as JSON
 import qualified Data.Aeson.Lens           as JLens
 import           Data.Aeson.Types          (parseMaybe)
+import qualified Data.ByteString.Char8     as C
 import qualified Data.ByteString.Lazy      as L
 import qualified Data.HashMap.Strict       as H
 import           Data.Text                 as Text hiding (filter, map)
@@ -40,7 +41,6 @@ import qualified Data.Text.IO              as TextIO (writeFile)
 import           Data.X509
 import           Data.X509.PKCS10          hiding (subject)
 import           FlatJWS
-import           Network.HTTP.Client       (HttpException (..))
 import           Network.HTTP.Types.Header (HeaderName)
 import           Network.HTTP.Types.Status (conflict409, created201)
 import           Network.Wreq
@@ -202,15 +202,16 @@ ensureNonce = do
 -- perform registration and return the location of the created resource
 acmeNewReg :: AcmeM Text
 acmeNewReg = do
-  let opts = defaults & checkStatus .~ Just statusNewReg
+  let opts = defaults & checkResponse .~ Just statusNewReg
   url <- unpack . newRegUrl <$> ensureDirectory
   res <- acmeSignedPostWith opts url resourceNewReg
   RegistrationError "registration location missing" `throwIfNothing` (res ^? responseHeaderUtf8 "Location")
   where
-    statusNewReg s h c
-      | s == created201 = Nothing
-      | s == conflict409 = Nothing
-      | otherwise = Just . toException . StatusCodeException s h $ c
+    statusNewReg _ res
+      | res ^. responseStatus == created201 = pure ()
+      | res ^. responseStatus == conflict409 = pure ()
+      | otherwise = throwM $ RegistrationError $
+                      res ^. responseStatus . statusMessage . to C.unpack
 
 --agree to the TOS for a specific registration
 acmeAgreeTOS :: Text -> AcmeM Object
@@ -329,4 +330,3 @@ acmeNewCert fetchOpts csr = do
 runAcmeM :: PrivateKey -> String -> AcmeM a -> IO a
 runAcmeM accountKey dirUrl (AcmeT m) =
   S.withAPISession $ evalStateT m . initialAcmeState accountKey dirUrl
-
