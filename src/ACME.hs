@@ -67,17 +67,23 @@ instance HasParams ACMEHeader where
     : JWS.params (h ^. acmeJwsHeader)
   extensions = const ["nonce"]
 
--- FIXME: implement properly
 acmeJwsAlg :: JWK -> AcmeT s JWS.Alg
-acmeJwsAlg _ = pure RS256
+acmeJwsAlg jwk' =
+  case jwk' ^. jwkMaterial of
+    ECKeyMaterial k -> case ecCrv k of
+      P_256 -> pure ES256
+      P_384 -> pure ES384
+      P_521 -> pure ES512
+    RSAKeyMaterial _ -> pure RS256
+    _ -> throwM $ JWSError "unsupported JWS signing algorithm"
 
 acmeSignedJws :: ToJSON a => JWK -> Text -> Text -> a -> AcmeT s (FlattenedJWS ACMEHeader)
-acmeSignedJws jwk' nonce' url payload = do
+acmeSignedJws jwk' nonce url payload = do
   alg' <- acmeJwsAlg jwk'
   let pubKey = HeaderParam Protected <$> (jwk' ^. asPublicKey)
   let jwsHeader' = newJWSHeader (Protected, alg') & JWS.jwk .~ pubKey
   let jsonPayload = encode payload
-  signJWS jsonPayload $ pure (ACMEHeader jwsHeader' nonce' url, jwk')
+  signJWS jsonPayload $ pure (ACMEHeader jwsHeader' nonce url, jwk')
 
 resourceObject :: Text -> Object
 resourceObject tp = H.fromList ["resource" A..= tp]
@@ -160,11 +166,7 @@ acmeNewReg = do
     statusNewReg _ res
       | res ^. responseStatus == created201 = pure ()
       | res ^. responseStatus == conflict409 = pure ()
-      | otherwise = do
-        body <- res ^. responseBody
-        _ <- throwM $ RegistrationError $ C.unpack body
-        pure ()
-      -- FIXME: res ^. responseStatus . statusMessage . to C.unpack
+      | otherwise = throwM $ RegistrationError (res ^. responseStatus . statusMessage . to C.unpack)
 
 acmeRegUpdate :: Text -> [(Text, Value)] -> AcmeM (Response Object)
 acmeRegUpdate url attribs =
