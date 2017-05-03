@@ -269,7 +269,7 @@ data ChainFetchOptions = ChainFull
 acmeNewCert :: ChainFetchOptions -> CertificationRequest -> AcmeM CertificateChain
 acmeNewCert fetchOpts csr = do
   dict <- useDirectory
-  resNew <- acmeSignedPost (dict ^. newCertUrl) (toDER csr ^. base64url . utf8 . to resourceNewCert)
+  resNew <- acmeSignedPost (dict ^. newCertUrl) (toDER csr ^. re base64url . utf8 . to resourceNewCert)
   location <- certLocErr `throwIfNothing` (resNew ^? responseHeader "Location". utf8 . unpacked)
   sess <- use acmeSession
   resCert <- liftIO $ iterateUntilM statusCreated (const $ S.get sess location) resNew
