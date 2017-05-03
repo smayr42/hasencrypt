@@ -1,5 +1,4 @@
 {-# LANGUAGE FlexibleContexts      #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RecordWildCards       #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
 
@@ -45,7 +44,7 @@ keyFromPEM pem =
   then keyFromDER . pemContent $ pem
   else Left "PEM: unknown format"
 
-data PKCSException = PKCSError String deriving (Show, Typeable)
+newtype PKCSException = PKCSError String deriving (Show, Typeable)
 
 instance Exception PKCSException where
   displayException (PKCSError e) = "PKCS Error: " ++ e

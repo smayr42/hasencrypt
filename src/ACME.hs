@@ -1,7 +1,5 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE OverloadedStrings          #-}
-{-# LANGUAGE Rank2Types                 #-}
-{-# LANGUAGE TemplateHaskell            #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TemplateHaskell   #-}
 
 module ACME
   ( AcmeM
@@ -19,114 +17,70 @@ module ACME
   , ChainFetchOptions(..)
   ) where
 
-import           Base64
 import           Control.Concurrent        (threadDelay)
-import           Control.Lens              as Lens
+import           Control.Lens              as L
 import           Control.Monad.Catch
 import           Control.Monad.IO.Class
 import           Control.Monad.Loops
-import           Control.Monad.State       as State
-import           Crypto.Hash               as Hash
-import           Crypto.PubKey.RSA         (PrivateKey, private_pub)
-import           Crypto.PubKey.RSA.Types   (Error)
-import           Crypto.Random.Types
-import           Data.Aeson                as JSON
-import qualified Data.Aeson.Lens           as JLens
+import           Control.Monad.State       as ST
+import           Crypto.Hash               (Digest, SHA256)
+import           Crypto.JOSE.JWS           as JWS
+import qualified Crypto.PubKey.RSA         as RSA (PrivateKey)
+import           Data.Aeson                as A
+import qualified Data.Aeson.Lens           as AL
 import           Data.Aeson.Types          (parseMaybe)
 import qualified Data.ByteString.Char8     as C
 import qualified Data.ByteString.Lazy      as L
 import qualified Data.HashMap.Strict       as H
-import           Data.Text                 as Text hiding (filter, map)
-import qualified Data.Text.IO              as TextIO (writeFile)
+import           Data.Text                 as T hiding (filter, map)
+import qualified Data.Text.IO              as TIO (writeFile)
+import           Data.Text.Strict.Lens
 import           Data.X509
 import           Data.X509.PKCS10          hiding (subject)
-import           FlatJWS
-import           Network.HTTP.Types.Header (HeaderName)
 import           Network.HTTP.Types.Status (conflict409, created201)
-import           Network.Wreq
+import           Network.Wreq              as W
 import qualified Network.Wreq.Session      as S
 import           System.Directory
 import           System.FilePath           ((</>))
 import           System.Timeout            (timeout)
 import           Utils
 
-responseHeaderUtf8 :: HeaderName -> Fold (Response body) Text
-responseHeaderUtf8 name = responseHeader name . to decodeUtf8
-responseHeaderString :: HeaderName -> Fold (Response body) String
-responseHeaderString name = responseHeaderUtf8 name . to unpack
+data ACMEHeader p = ACMEHeader
+  { _acmeJwsHeader :: JWSHeader p
+  , _acmeJwsNonce  :: Text
+  , _acmeJwsUrl    :: Text
+  }
+makeLenses ''ACMEHeader
 
-data Directory = Directory
-  { newRegUrl      :: Text
-  , newAuthzUrl    :: Text
-  , newCertUrl     :: Text
-  , _revokeCertUrl :: Text
-  } deriving (Eq, Show)
+instance HasJWSHeader ACMEHeader where
+  jwsHeader = acmeJwsHeader
 
-instance FromJSON Directory where
-  parseJSON (Object o) =
-    Directory <$> o .: "new-reg"
-              <*> o .: "new-authz"
-              <*> o .: "new-cert"
-              <*> o .: "revoke-cert"
-  parseJSON _ = mzero
+instance HasParams ACMEHeader where
+  parseParamsFor prx hp hu
+     =  ACMEHeader
+    <$> parseParamsFor prx hp hu
+    <*> headerRequiredProtected "nonce" hp hu
+    <*> headerRequiredProtected "url" hp hu
+  params h
+    = (True, "nonce" A..= (h ^. acmeJwsNonce))
+    : (True, "url" A..= (h ^. acmeJwsUrl))
+    : JWS.params (h ^. acmeJwsHeader)
+  extensions = const ["nonce"]
 
-data Challenge = Challenge
-  { _chType   :: Text
-  , _chUri    :: Text
-  , _chToken  :: Text
-  , _chStatus :: Text
-  , _chError  :: Maybe Value
-  } deriving (Eq, Show)
-makeLenses ''Challenge
+-- FIXME: implement properly
+acmeJwsAlg :: JWK -> AcmeT s JWS.Alg
+acmeJwsAlg _ = pure RS256
 
-instance FromJSON Challenge where
-  parseJSON (Object o) =
-    Challenge <$> o .: "type"
-              <*> o .: "uri"
-              <*> o .: "token"
-              <*> o .: "status"
-              <*> o .:? "error"
-  parseJSON _ = mzero
-
-data AcmeState = AcmeState
-  { _nonce        :: Maybe Text
-  , _directory    :: Maybe Directory
-  , _key          :: PrivateKey
-  , _directoryUrl :: String
-  , _session      :: S.Session
-  } deriving Show
-makeLenses ''AcmeState
-
-initialAcmeState :: PrivateKey -> String -> S.Session -> AcmeState
-initialAcmeState = AcmeState Nothing Nothing
-
-data AcmeException =
-    RSAError Error
-  | NonceError String
-  | RegistrationError String
-  | AuthorizationError String
-  | JWSError String
-  | CertError String
-  deriving (Show, Typeable)
-
-instance Exception AcmeException where
-  displayException (RSAError e)           = "RSA error: " ++ show e
-  displayException (NonceError e)         = "Nonce error: " ++ e
-  displayException (RegistrationError e)  = "Registration error: " ++ e
-  displayException (AuthorizationError e) = "Authorization error: " ++ e
-  displayException (JWSError e)           = "JWS error: " ++ e
-  displayException (CertError e)          = "Certificate error: " ++ e
-
-newtype AcmeT s a = AcmeT { _runAcmeT :: StateT s IO a }
-  deriving (Functor, Applicative, Monad, MonadIO, MonadThrow, MonadCatch, MonadMask, MonadState s)
-
-type AcmeM a = AcmeT AcmeState a
-
-instance MonadRandom (AcmeT s) where
-  getRandomBytes = liftIO . getRandomBytes
+acmeSignedJws :: ToJSON a => JWK -> Text -> Text -> a -> AcmeT s (FlattenedJWS ACMEHeader)
+acmeSignedJws jwk' nonce' url payload = do
+  alg' <- acmeJwsAlg jwk'
+  let pubKey = HeaderParam Protected <$> (jwk' ^. asPublicKey)
+  let jwsHeader' = newJWSHeader (Protected, alg') & JWS.jwk .~ pubKey
+  let jsonPayload = encode payload
+  signJWS jsonPayload $ pure (ACMEHeader jwsHeader' nonce' url, jwk')
 
 resourceObject :: Text -> Object
-resourceObject tp = H.fromList ["resource" JSON..= tp]
+resourceObject tp = H.fromList ["resource" A..= tp]
 
 resourceNewReg :: Object
 resourceNewReg = resourceObject "new-reg"
@@ -137,65 +91,61 @@ resourceReg = resourceObject "reg"
 resourceNewAuthz :: Text -> Object
 resourceNewAuthz identifier =
   resourceObject "new-authz" <> H.fromList
-    [ "identifier" JSON..=
-      object [ "type" JSON..= String "dns"
-             , "value" JSON..= identifier
+    [ "identifier" A..=
+      object [ "type" A..= String "dns"
+             , "value" A..= identifier
              ]
     ]
 
 resourceChallenge :: Text -> Text -> Object
 resourceChallenge tp keyAuthz =
   resourceObject "challenge" <> H.fromList
-    [ "type" JSON..= tp
-    , "keyAuthorization" JSON..= keyAuthz
+    [ "type" A..= tp
+    , "keyAuthorization" A..= keyAuthz
     ]
 
 resourceNewCert :: Text -> Object
 resourceNewCert csr =
   resourceObject "new-cert" <> H.fromList
-    [ "csr" JSON..= csr ]
-
+    [ "csr" A..= csr ]
 
 acmeRequest :: IO (Response a) -> AcmeM (Response a)
 acmeRequest request = do
   r <- liftIO request
-  nonce Lens..= (r ^? responseHeaderUtf8 "Replay-Nonce")
+  acmeNonce L..= (r ^? responseHeader "Replay-Nonce" . utf8)
   return r
 
-acmeSignedPostWith :: ToJSON a => Options -> String -> a -> AcmeM (Response L.ByteString)
+acmeSignedPostWith :: ToJSON a => Options -> Text -> a -> AcmeM (Response L.ByteString)
 acmeSignedPostWith opts url payload = do
   n <- ensureNonce
-  k <- use key
-  sess <- use session
-  signed <- throwIfError RSAError =<< signJWS (RS256 k) (makeJWS n)
-  acmeRequest $ S.postWith opts sess url $ toJSON signed
-  where
-    makeJWS n = plainJWS (encode payload) (Just $ makeHeader n) Nothing
-    makeHeader n = H.fromList [("nonce", String n)]
+  k <- use (acmeKey . to JWS.fromRSA)
+  sess <- use acmeSession
+  signed <- acmeSignedJws k n url payload
+  acmeRequest $ S.postWith opts sess (T.unpack url) $ toJSON signed
 
-acmeSignedPost :: ToJSON a => String -> a -> AcmeM (Response L.ByteString)
+acmeSignedPost :: ToJSON a => Text -> a -> AcmeM (Response L.ByteString)
 acmeSignedPost = acmeSignedPostWith defaults
 
-ensureDirectory :: AcmeM Directory
-ensureDirectory = do
-  currentDirectory <- use directory
+useDirectory :: AcmeM Directory
+useDirectory = do
+  currentDirectory <- use acmeDirectory
   case currentDirectory of
     Nothing -> do
-      url <- use directoryUrl
-      sess <- use session
-      r <- (^. responseBody) <$> (asJSON =<< acmeRequest (S.get sess url))
-      directory Lens..= Just r
+      url <- use acmeDirectoryUrl
+      sess <- use acmeSession
+      r <- view responseBody <$> (asJSON =<< acmeRequest (S.get sess url))
+      acmeDirectory L..= Just r
       return r
     Just dir -> return dir
 
 ensureNonce :: AcmeM Text
 ensureNonce = do
-  currentNonce <- use nonce
+  currentNonce <- use acmeNonce
   case currentNonce of
     Nothing -> do
-      url <- use directoryUrl
-      sess <- use session
-      nextNonce <- acmeRequest (S.head_ sess url) >> use nonce
+      url <- use acmeDirectoryUrl
+      sess <- use acmeSession
+      nextNonce <- acmeRequest (S.head_ sess url) >> use acmeNonce
       NonceError "head request did not return nonce" `throwIfNothing` nextNonce
     Just n -> return n
 
@@ -203,63 +153,68 @@ ensureNonce = do
 acmeNewReg :: AcmeM Text
 acmeNewReg = do
   let opts = defaults & checkResponse .~ Just statusNewReg
-  url <- unpack . newRegUrl <$> ensureDirectory
-  res <- acmeSignedPostWith opts url resourceNewReg
-  RegistrationError "registration location missing" `throwIfNothing` (res ^? responseHeaderUtf8 "Location")
+  dir <- useDirectory
+  res <- acmeSignedPostWith opts (dir ^. newRegUrl) resourceNewReg
+  RegistrationError "registration location missing" `throwIfNothing` (res ^? responseHeader "Location" . utf8)
   where
     statusNewReg _ res
       | res ^. responseStatus == created201 = pure ()
       | res ^. responseStatus == conflict409 = pure ()
-      | otherwise = throwM $ RegistrationError $
-                      res ^. responseStatus . statusMessage . to C.unpack
+      | otherwise = do
+        body <- res ^. responseBody
+        _ <- throwM $ RegistrationError $ C.unpack body
+        pure ()
+      -- FIXME: res ^. responseStatus . statusMessage . to C.unpack
+
+acmeRegUpdate :: Text -> [(Text, Value)] -> AcmeM (Response Object)
+acmeRegUpdate url attribs =
+  acmeSignedPost url (resourceReg <> H.fromList attribs) >>= asJSON
 
 --agree to the TOS for a specific registration
 acmeAgreeTOS :: Text -> AcmeM Object
 acmeAgreeTOS reg = do
-  resReg <- acmeRegUpdate sreg []
-  resUpdate <- acmeRegUpdate sreg ["agreement" JSON..= tos resReg]
+  resReg <- acmeRegUpdate reg []
+  resUpdate <- acmeRegUpdate reg ["agreement" A..= tos resReg]
   return $ resUpdate ^. responseBody
   where
-    sreg = unpack reg
-    acmeRegUpdate :: String -> [(Text, Value)] -> AcmeM (Response Object)
-    acmeRegUpdate url attribs = acmeSignedPost url (resourceReg <> H.fromList attribs) >>= asJSON
-    tos res = res ^? responseLink "rel" "terms-of-service" . linkURL . to decodeUtf8
+    tos res = res ^? responseLink "rel" "terms-of-service" . linkURL . utf8
 
 -- respond to the http-01 challenge
 acmeHttp01Challenge :: FilePath -> Challenge -> AcmeM Challenge
 acmeHttp01Challenge webroot challenge = do
   chTypeErr `throwIfNot` (challenge ^. chType == "http-01")
-  keyAuthz <- makeKeyAuthz <$> use key
+  keyAuthz <- makeKeyAuthz <$> use acmeKey
   do
-    liftIO $ TextIO.writeFile fileName keyAuthz
-    _ <- acmeSignedPost uri $ resourceChallenge "http-01" keyAuthz
-    acmeAwaitAuthz uri
+    liftIO $ TIO.writeFile fileName keyAuthz
+    _ <- acmeSignedPost (challenge ^. chUri) $ resourceChallenge "http-01" keyAuthz
+    acmeAwaitAuthz (challenge ^. chUri)
   `finally`
     liftIO (removeFile fileName)
   where
     fileName = webroot </> challenge ^. chToken . to unpack
-    uri = challenge ^. chUri . to unpack
     makeKeyAuthz priv = challenge ^. chToken <> "." <> makeThumbprint priv
-    makeThumbprint priv = jwkThumbprint Hash.SHA256 (private_pub priv)
+    makeThumbprint priv = JWS.fromRSA priv ^. thumbprintSha256 . re digest . base64url . utf8
+    thumbprintSha256 = JWS.thumbprint :: Getter JWK (Digest SHA256)
     chTypeErr = AuthorizationError "wrong challenge type"
 
 acmeTimeout :: Int -> AcmeM a -> AcmeM (Maybe a)
 acmeTimeout sec (AcmeT f) = do
-  s <- State.get
+  s <- ST.get
   res <- liftIO $ timeout usec $ runStateT f s
   case res of
-       Just (a,s') -> State.put s' >> return (Just a)
-       Nothing     -> nonce Lens..= Nothing >> return Nothing
+       Just (a,s') -> ST.put s' >> return (Just a)
+       Nothing     -> acmeNonce L..= Nothing >> return Nothing
   where
     usec = 1000000 * sec
 
 -- wait until an authorization is valid or revoked
-acmeAwaitAuthz :: String -> AcmeM Challenge
+acmeAwaitAuthz :: Text -> AcmeM Challenge
 acmeAwaitAuthz url = do
-  sess <- use session
+  sess <- use acmeSession
   res <- acmeTimeout 30 $ iterateUntil notPending $ do
     liftIO $ threadDelay $ 1000 * 500
-    fmap (^. responseBody) . asJSON =<< liftIO (S.get sess url)
+    r <- asJSON =<< liftIO (S.get sess $ T.unpack url)
+    return (r ^. responseBody)
   ch <- timeoutErr `throwIfNothing` res
   revokedErr ch `throwIfNot` isValid ch
   return ch
@@ -269,7 +224,7 @@ acmeAwaitAuthz url = do
     timeoutErr = AuthorizationError "challenge timed out"
     revokedErr ch =
       AuthorizationError $
-        ch ^. chError . _Just . JLens.key "detail" . JLens._String . to unpack
+        ch ^. chError . _Just . AL.key "detail" . AL._String . to unpack
 
 -- request a new authorization and return the location of the created resource and a list of challenges
 -- TODO: handle nontrivial combination policies
@@ -277,15 +232,15 @@ acmeAwaitAuthz url = do
 -- TODO: investigate whether it's possible to reliabliy reuse existing authorizations
 acmeNewAuthz :: Text -> AcmeM (Text, [Challenge])
 acmeNewAuthz identifier = do
-  url <- unpack . newAuthzUrl <$> ensureDirectory
-  res <- acmeSignedPost url $ resourceNewAuthz identifier
+  dir <- useDirectory
+  res <- acmeSignedPost (dir ^. newAuthzUrl) (resourceNewAuthz identifier)
   challenges <- chParseErr `throwIfNothing` parseChallenges res
-  loc <- chLocErr `throwIfNothing` (res ^? responseHeaderUtf8 "Location")
+  loc <- chLocErr `throwIfNothing` (res ^? responseHeader "Location" . utf8)
   return (loc, challenges)
   where
     chParseErr = AuthorizationError "no or invalid challenges received"
     chLocErr = AuthorizationError "challenge location missing"
-    parseChallenges res = res ^. responseBody . JLens.key "challenges" . to (parseMaybe parseJSON)
+    parseChallenges res = res ^. responseBody . AL.key "challenges" . to (parseMaybe parseJSON)
 
 -- authorize a new domain by responding to the http-01 challenge
 acmeNewHttp01Authz :: FilePath -> Text -> AcmeM Challenge
@@ -299,11 +254,11 @@ acmeNewHttp01Authz webroot domain = do
 
 followUpLinks :: Response L.ByteString -> AcmeM [L.ByteString]
 followUpLinks response = do
-  sess <- use session
+  sess <- use acmeSession
   responses <- unfoldUntilM (not . hasUpLink) (liftIO .  S.get sess . relUpLink) response
   return $ responses ^.. folded . responseBody
   where
-    relUpLink r = r ^. responseLink "rel" "up" . linkURL . to decodeUtf8 . to unpack
+    relUpLink r = r ^. responseLink "rel" "up" . linkURL . utf8 . unpacked
     hasUpLink = has $ responseLink "rel" "up"
 
 data ChainFetchOptions = ChainFull
@@ -311,22 +266,21 @@ data ChainFetchOptions = ChainFull
 
 acmeNewCert :: ChainFetchOptions -> CertificationRequest -> AcmeM CertificateChain
 acmeNewCert fetchOpts csr = do
-  url <- unpack . newCertUrl <$> ensureDirectory
-  resNew <- acmeSignedPost url $ resourceNewCert $ base64 $ toDER csr
-  location <- certLocErr `throwIfNothing` (resNew ^? responseHeaderString "Location")
-  sess <- use session
+  dict <- useDirectory
+  resNew <- acmeSignedPost (dict ^. newCertUrl) (toDER csr ^. base64url . utf8 . to resourceNewCert)
+  location <- certLocErr `throwIfNothing` (resNew ^? responseHeader "Location". utf8 . unpacked)
+  sess <- use acmeSession
   resCert <- liftIO $ iterateUntilM statusCreated (const $ S.get sess location) resNew
   chain <- throwIfNothing timeoutErr =<< acmeTimeout 30 (fetchChain fetchOpts resCert)
   decodeChain $ CertificateChainRaw $ L.toStrict <$> chain
   where
     fetchChain ChainFull resCert = followUpLinks resCert
     fetchChain ChainHead resCert = return [resCert ^. responseBody]
-    base64 = decodeUtf8 . getByteString . encodeUnpad64
     statusCreated r = r ^. responseStatus == created201
     certLocErr = AuthorizationError "certificate location missing"
     decodeChain chain = (CertError . show) `throwIfError` decodeCertificateChain chain
     timeoutErr = CertError "timeout when retrieving the certificate chain"
 
-runAcmeM :: PrivateKey -> String -> AcmeM a -> IO a
+runAcmeM :: RSA.PrivateKey -> String -> AcmeM a -> IO a
 runAcmeM accountKey dirUrl (AcmeT m) =
-  S.withAPISession $ evalStateT m . initialAcmeState accountKey dirUrl
+  S.withAPISession $ evalStateT m . initialAcmeState dirUrl accountKey

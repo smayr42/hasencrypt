@@ -27,6 +27,7 @@ import           Data.Tuple            (swap)
 import           Data.Typeable         as Exports
 import           Safe                  as Exports
 import           System.Console.GetOpt as GetOpt
+import           Types                 as Exports
 
 throwIfNot :: (MonadThrow m, Exception e) => e -> Bool -> m ()
 throwIfNot e b = if not b then throwM e else pure ()
@@ -67,4 +68,3 @@ getOptReq descrs args =
     extArgFun l (NoArg f)    = NoArg $ (:) l *** (:) f
     required = [l | ReqOption (Option _ l _ _) <- descrs]
     subsetOf xs ys = all (`elem` ys) xs
-
