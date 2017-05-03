@@ -152,12 +152,13 @@ options =
       (\o opts -> opts { optRenewCert = Just o })
       "FILE"
     ) "An optional certificate that is checked for impending expiration.\n\
-      \If renewal is required the certificate is replaced by a newly issued one.\n\n"
+      \If renewal is required the certificate is replaced by a newly issued one.\n\
+      \Otherwise, no action is performed.\n\n"
 
   , OptOption $ Option ['h'] ["head"]
     (NoArg
       (\opts -> opts { optFetchChain = ChainHead })
-    ) "Fetch only the end-user certificate and not the full certificate chain."
+    ) "Fetch only the leaf certificate and not the full certificate chain."
   ]
 
 parseOptions :: [String] -> IO Options

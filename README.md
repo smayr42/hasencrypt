@@ -9,13 +9,15 @@ To build and install `hasencrypt` with [stack](http://haskellstack.org), just
 clone the repository and run
 
 ```
-stack install
+$ stack setup
+$ stack build
+$ stack install
 ```
 
 ## Usage
 
 ```
-hasencrypt [OPTION...] domains...
+Usage: hasencrypt [OPTION...] domains...
 
   -D[URL]  --directory-url[=URL]  The ACME directory URL.
                                   If this option is specified without URL, the Let's Encrypt directory is
@@ -32,6 +34,8 @@ hasencrypt [OPTION...] domains...
   -r FILE  --renew=FILE           An optional certificate that is checked for impending expiration.
                                   If renewal is required the certificate is replaced by a newly issued one.
                                   Otherwise, no action is performed.
+                                  
+  -h       --head                 Fetch only the leaf certificate and not the full certificate chain.
 ```
 
 ## Examples
